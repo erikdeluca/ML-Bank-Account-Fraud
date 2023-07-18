@@ -1,0 +1,65 @@
+---
+title: "Bank Account Fraud"
+author: "Erik De Luca"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    df_print: "paged"
+---
+
+# Librerie
+
+```{r, include=FALSE}
+library(gbm)
+library(insuranceData)
+library(randomForest)
+library(ROSE)
+library(dplyr)
+library(tidyverse)
+library(tree)
+library(smotefamily)
+library(ModelMetrics)
+library(ggplot2)
+```
+
+
+# Importazione dei dati
+
+```{r}
+df <- read.csv("data/Base.csv") %>% 
+  tibble()
+df
+```
+
+## Trasformazione variabili
+
+Trasformo la variabile `fraud_bool` da *integer* a *factor*.
+
+```{r}
+df = df %>% 
+  mutate(fraud = factor(fraud_bool, labels = c("No fraud", "Fraud"))) %>%  
+  select(-fraud_bool)
+table(df$fraud)
+```
+
+# Analisi preliminare dei dati
+
+Controllo della presenza di NA nel dataset.
+
+```{r}
+anyNA.data.frame(df)
+```
+Breve visione del dataframe, è composto da un milione di osservazioni e 32 variabili. 
+Sarà necessario poner attenzione nell'ottimizzazione di alcuni comandi per la riduzione del tempo macchina nell'esecuzione degli stessi.
+
+```{r}
+df %>% 
+  skimr::skim()
+```
+
+
+
+```{r}
+df
+```
+
