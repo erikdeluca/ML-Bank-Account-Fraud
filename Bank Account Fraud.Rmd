@@ -35,6 +35,9 @@ library(kableExtra)
 
 # Importazione dei dati
 
+I dati sono stati importati dal  sito Kaggle al seguente link https://www.kaggle.com/datasets/sgpjesus/bank-account-fraud-dataset-neurips-2022 e si riferiscono alle frodi bancarie.
+L'
+
 ```{r}
 df <- read.csv("data/Base.csv") %>% 
   tibble()
@@ -167,10 +170,13 @@ apply(matrix(1:ncol(dfChar)),1, function(indexCol)
 # funzione per trasporre una tibble
 transposeTibble = function(df) 
 {
-  tDf = t(df)[-1,]
+  tDf = t(df)[-1,] %>% 
+    data.frame() %>% 
+    tibble()
   colnames(tDf) = rownames(df)
+  print(rownames(df))
   # rownames(tDf) = colnames(df)
-  return(tDf %>% tibble)
+  return(tDf)
 }
 
 b=df %>% 
@@ -180,8 +186,32 @@ b=df %>%
     group_by(fraud) %>%
     summarise_if(is.character,mode)) %>% 
   column_to_rownames("fraud...1") %>% 
-  t() %>% 
-  tibble()
+  transposeTibble()
 b
+
+df %>% 
+  group_by(fraud) %>%
+  summarise_if(is.numeric,mean) %>% 
+  bind_cols(df %>% 
+    group_by(fraud) %>%
+    summarise_if(is.character,mode)) %>% 
+  # column_to_rownames("fraud...1") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  tibble() %>% 
+  mutate_at(vars(2:3), as.numeric)
+  
+
+df %>% 
+  group_by(fraud) %>%
+  summarise_if(is.numeric,mean) %>% 
+  bind_cols(df %>% 
+    group_by(fraud) %>%
+    summarise_if(is.character,mode)) %>% 
+  as.matrix() %>% 
+  t() %>% 
+  
+
+  
 ```
 
