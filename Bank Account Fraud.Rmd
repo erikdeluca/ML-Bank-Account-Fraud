@@ -18,7 +18,6 @@ output:
 
 ```{r, include=FALSE}
 library(gbm)
-library(insuranceData)
 library(randomForest)
 library(ROSE)
 library(dplyr)
@@ -30,6 +29,13 @@ library(ggplot2)
 library(viridis)
 library(hrbrthemes)
 library(kableExtra)
+library(knitr)
+library(tune)
+library(discrim)
+library(klaR)
+library(themis)
+tidymodels_prefer()
+conflicted::conflict_prefer("dplyr", "MASS")
 ```
 
 
@@ -83,7 +89,7 @@ df %>% head(100)
 ```{r, warning=FALSE}
 df %>%
   select(where(is.numeric)) %>% 
-  mutate_all(scale) %>%  
+  # mutate_all(scale) %>%  
   pivot_longer(cols = 1:9,
                names_to = "Variabili",
                values_to = "Valori") %>%  
@@ -99,13 +105,13 @@ df %>%
     ) +
     xlab("") +
     ylab("") +
-    facet_wrap(~Variabili, ncol = 3)
+    facet_wrap(~Variabili, ncol = 3, scales = "free")
 ```
 
 ```{r, warning=FALSE}
 df %>%
   select(where(is.numeric)) %>% 
-  mutate_all(scale) %>%  
+  # mutate_all(scale) %>%  
   pivot_longer(cols = 10:18,
                names_to = "Variabili",
                values_to = "Valori") %>%  
@@ -121,13 +127,13 @@ df %>%
     ) +
     xlab("") +
     ylab("") +
-    facet_wrap(~Variabili, ncol = 3)
+    facet_wrap(~Variabili, ncol = 3, scales = "free")
 ```
 
 ```{r, warning=FALSE}
 df %>%
   select(where(is.numeric)) %>% 
-  mutate_all(scale) %>%  
+  # mutate_all(scale) %>%  
   pivot_longer(cols = 19:26,
                names_to = "Variabili",
                values_to = "Valori") %>%  
@@ -143,75 +149,188 @@ df %>%
     ) +
     xlab("") +
     ylab("") +
-    facet_wrap(~Variabili, ncol = 3)
+    facet_wrap(~Variabili, ncol = 3, scales = "free")
 ```
 
 ### Grafici a barre delle variabili qualitative
 
+#### Trasformazione Variabili
+
+Alcune variabili devono essere trasformate da `character` a `factor`, allo stesso tempo anche alcune variabili quantitative discrete possono essere considerate come variabili qualitative ordinali. 
+
+Prima della rappresentazione grafiche si sottopone il dataset alle trasformazioni sopra descritte.
+
+```{r}
+df = df %>% 
+  mutate_at(vars(c(customer_age, income, email_is_free, proposed_credit_limit,
+                   phone_home_valid, phone_mobile_valid, device_distinct_emails_8w,
+                   foreign_request, has_other_cards, keep_alive_session, month)), 
+            ~ factor(.)) %>% # ordered = T 
+  mutate_if(is.character, factor)
+df
+```
+
+
 ```{r, warning=FALSE}
 dfChar = df %>%
-  select(where(is.character)) 
-apply(matrix(1:ncol(dfChar)),1, function(indexCol)
+  select(where(is.factor)) 
+# apply(matrix(1:(ncol(dfChar) - 1)),1, function(indexCol)
+apply(matrix(1:2),1, function(indexCol)
 {
-  ggplot(dfChar, aes(x = get(colnames(dfChar)[indexCol]))) +
-  geom_bar(fill = RColorBrewer::brewer.pal(ncol(dfChar),"Pastel2")[indexCol]) + 
+  ggplot(dfChar, aes(x = get(colnames(dfChar)[indexCol]), group = fraud)) +
+  geom_bar(aes(y = ..prop.., fill =  fraud), stat = "count") +
+  scale_y_continuous(labels=scales::percent) +
   xlab(colnames(dfChar)[indexCol]) +
   ylab("Osservazioni") +
   theme_ipsum() +
   theme(legend.position="none")
 }
 )
-   
 ```
 
 ## Variabile fraud con le varibili indipendenti
 
 ```{r}
-# funzione per trasporre una tibble
-transposeTibble = function(df) 
-{
-  tDf = t(df)[-1,] %>% 
-    data.frame() %>% 
-    tibble()
-  colnames(tDf) = rownames(df)
-  print(rownames(df))
-  # rownames(tDf) = colnames(df)
-  return(tDf)
-}
-
-b=df %>% 
-  group_by(fraud) %>%
-  summarise_if(is.numeric,mean) %>% 
-  bind_cols(df %>% 
-    group_by(fraud) %>%
-    summarise_if(is.character,mode)) %>% 
-  column_to_rownames("fraud...1") %>% 
-  transposeTibble()
-b
-
 df %>% 
   group_by(fraud) %>%
   summarise_if(is.numeric,mean) %>% 
   bind_cols(df %>% 
     group_by(fraud) %>%
-    summarise_if(is.character,mode)) %>% 
-  # column_to_rownames("fraud...1") %>% 
-  t() %>% 
-  as.data.frame() %>% 
-  tibble() %>% 
-  mutate_at(vars(2:3), as.numeric)
-  
-
-df %>% 
-  group_by(fraud) %>%
-  summarise_if(is.numeric,mean) %>% 
-  bind_cols(df %>% 
-    group_by(fraud) %>%
-    summarise_if(is.character,mode)) %>% 
+    summarise_if(is.character,DescTools::Mode)) %>% 
   as.matrix() %>% 
   t() %>% 
-  
+  janitor::row_to_names(row_number = 1) %>% 
+  tibble()
+```
+```{r, warning=FALSE}
+grafici = lapply(1:4,function(x)
+{
+  df %>% 
+  select(where(is.numeric)|fraud) %>%
+  # mutate_if(is.numeric, scale) %>% 
+  pivot_longer(cols = 1:ifelse(x==4,3,4)+seq(0,16,by = 4)[x],
+               names_to = "Variabili",
+               values_to = "Valori") %>%
+  group_by(fraud) %>% 
+  ggplot(aes(y = Valori, x = fraud, color = fraud, fill = fraud)) +
+  geom_boxplot(alpha = 0.6) + 
+  scale_fill_viridis(discrete=TRUE) +
+    scale_color_viridis(discrete=TRUE) +
+    theme_ipsum() +
+    theme(
+      legend.position="none",
+      panel.spacing = unit(0.1, "lines"),
+      strip.text.x = element_text(size = 8)
+    ) +
+    xlab("") +
+    ylab("") +
+    facet_wrap(~Variabili, ncol = 2, scales = "free_y")
+}
+)
 
-  
+for(i in 1:4) print(grafici[[i]])
+```
+
+
+
+## Correlazione
+
+
+```{r}
+# df[c(1:1000, 50000:51000),] %>% 
+df %>% 
+  select(is.numeric) %>% 
+  select(where(~ length(levels(factor(.))) > 2)) %>% 
+  rename_all(~ str_trunc(., width = 15)) %>% 
+  scale() %>% 
+  cor() %>% 
+  corrplot::corrplot(cl.cex = 0.5,
+                     type = "lower",
+                    tl.pos = "l")
+```
+
+
+# Primo modello
+
+```{r}
+df %>% 
+  select(fraud) %>% 
+  table() %>%
+  as_tibble() %>% 
+  mutate(perc = round(n/nrow(df)*100, digits = 1))
+```
+
+
+## Campionamento e sottocampionamento
+
+```{r}
+df_rec_rose = 
+  recipe(fraud ~ ., data = df) %>% 
+  step_rose(fraud)
+
+df_rec = 
+  recipe(fraud ~ ., data = df)
+```
+
+## Modello
+
+```{r}
+qda_mod = 
+  discrim_regularized(frac_common_cov = 0, frac_identity = 0) %>% 
+  set_engine("klaR")
+
+ct_mod = decision_tree() %>%
+  set_engine(engine = 'rpart') %>%
+  set_args(cost_complexity = NULL,  #default is 0.01 (used for pruning a tree)
+           min_n = NULL, #min number of observations to try split: default is 20 [I think the documentation has a typo and says 2]  (used to stop early)
+           tree_depth = NULL) %>% #max depth, number of branches/splits to get to any final group: default is 30 (used to stop early)
+  set_mode('classification') # change this for regression tree
+```
+
+## Workflow
+
+```{r}
+qda_rose_wflw = 
+  workflow() %>% 
+  add_model(qda_mod) %>% 
+  add_recipe(df_rec_rose)
+
+qda_rose_wflw
+
+
+ct_rose_wflw = 
+  workflow() %>% 
+  add_model(ct_mod) %>% 
+  add_recipe(df_rec_rose)
+
+ct_rose_wflw
+
+ct_wflw = 
+  workflow() %>% 
+  add_model(ct_mod) %>% 
+  add_recipe(df_rec)
+
+ct_wflw
+```
+## Performance modello
+
+```{r}
+set.seed(1)
+cv_folds = vfold_cv(df, strata = "fraud", repeats = 10)
+
+cls_metrics = metric_set(roc_auc, j_index)
+```
+
+## Fit modello
+
+```{r}
+set.seed(1)
+ct_res = fit_resamples(
+  ct_wflw, 
+  resamples = cv_folds, 
+  metrics = cls_metrics
+)
+
+collect_metrics(ct_res)
 ```
 
