@@ -34,20 +34,26 @@ library(tune)
 library(discrim)
 library(klaR)
 library(themis)
+library(tidymodels)
+library(plotly)
 tidymodels_prefer()
-conflicted::conflict_prefer("dplyr", "MASS")
+conflicted::conflict_prefer("select", "dplyr")
 ```
 
 
 # Importazione dei dati
 
 I dati sono stati importati dal  sito Kaggle al seguente link https://www.kaggle.com/datasets/sgpjesus/bank-account-fraud-dataset-neurips-2022 e si riferiscono alle frodi bancarie.
-L'
+
+L'obbiettivo del progetto è sviluppare un modello di previsione delle frodi bancarie.
+
+Il dataset a disposizione offre dati realistici basati sul mondo reale ma protetti da privacy tramite diverse tecniche come *noise addittion* e addesstramento di un modello generativo *CTGAN*.
 
 ```{r}
 df <- read.csv("data/Base.csv") %>% 
   tibble()
-df
+
+df %>% head(50)
 ```
 
 ## Trasformazione variabili
@@ -78,13 +84,15 @@ df %>%
 
 
 
-```{r}
-df %>% head(100)
-```
+
 
 ## Grafici delle variabili
 
+Eseguo un'analisi esplorativa dei dati grafica per visualizzare con facilità eventuli problematiche o possibili miglioramenti che possono essere applicati al dataset.
+
 ### Istogramma delle variabili numeriche
+
+Vengono prodotti gli istogrammi delle variabili numeriche per osservare le loro distribuzioni.
 
 ```{r, warning=FALSE}
 df %>%
@@ -160,12 +168,18 @@ Alcune variabili devono essere trasformate da `character` a `factor`, allo stess
 
 Prima della rappresentazione grafiche si sottopone il dataset alle trasformazioni sopra descritte.
 
+Viene rimossa anche la variabile *device_fraud_count* in quanto possiede una varianza nulla.
+
+Alcune variabili quantitative discrete vengono trasformate in variabili qualitative poiché presentano un numero limitato di distinte osservazioni e mostrano una correlazione lineare con la variabile dipendente. 
+Tale approccio può migliorare la precisione delle stime, sebbene comporti un aumento nel numero dei parametri da stimare.
+
 ```{r}
 df = df %>% 
+  select(- device_fraud_count) %>% 
   mutate_at(vars(c(customer_age, income, email_is_free, proposed_credit_limit,
                    phone_home_valid, phone_mobile_valid, device_distinct_emails_8w,
-                   foreign_request, has_other_cards, keep_alive_session, month)), 
-            ~ factor(.)) %>% # ordered = T 
+                   foreign_request, has_other_cards, keep_alive_session, month)),
+            ~ factor(.)) %>% # ordered = T
   mutate_if(is.character, factor)
 df
 ```
@@ -208,7 +222,7 @@ grafici = lapply(1:4,function(x)
   df %>% 
   select(where(is.numeric)|fraud) %>%
   # mutate_if(is.numeric, scale) %>% 
-  pivot_longer(cols = 1:ifelse(x==4,3,4)+seq(0,16,by = 4)[x],
+  pivot_longer(cols = 1:ifelse(x==4,2,4)+seq(0,16,by = 4)[x],
                names_to = "Variabili",
                values_to = "Valori") %>%
   group_by(fraud) %>% 
@@ -250,7 +264,42 @@ df %>%
 ```
 
 
-# Primo modello
+# Modelli
+
+## Divisione dei dati
+
+```{r}
+data_split = initial_split(df, prop = 3/4, strata = "fraud")
+
+data_train = training(data_split)
+data_test = testing(data_split)
+```
+
+
+## Preprocessamento
+
+`step_novel(all_nominal_predictors())`: Identifica variabili categoriche che potrebbero contenere nuove categorie non presenti nei dati di addestramento. Questo passo è utile per gestire categorie non viste durante l'addestramento del modello che invece potrebbero essere presenti nel dataset di testing del modello.
+
+`step_normalize(all_numeric_predictors())`: Normalizza tutte le variabili numeriche in modo che abbiano una media di 0 e una deviazione standard di 1. Questo può essere utile per garantire che tutte le variabili abbiano lo stesso peso nella costruzione del modello. 
+Inoltre, sarà comodo per capire il peso dei coefficienti nel modello.
+
+`step_dummy(all_nominal_predictors())`: Crea variabili fittizie (dummy variables) per le variabili categoriche, consentendo al modello di trattare correttamente le categorie senza un ordine intrinseco.
+
+`step_rose(fraud)`: Utilizza il metodo di sovracampionamento chiamato ROSE (Random Over-Sampling Examples) per bilanciare le classi nel dataset. Infatti i casi di frode sono nettamente inferiori (1,1%) ai casi in cui non si verifica la frode.
+
+`step_zv(all_nominal_predictors())`: Rimuove le variabili categoriche che hanno varianza zero, il che significa che sono costanti e non portano alcuna informazione predittiva.
+
+```{r}
+df_rec = 
+  recipe(fraud ~ ., data = data_train) %>% 
+  step_novel(all_nominal_predictors()) %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_rose(fraud) %>% 
+  step_zv(all_nominal_predictors())  
+```
+
+### Campionamento e sottocampionamento
 
 ```{r}
 df %>% 
@@ -260,77 +309,423 @@ df %>%
   mutate(perc = round(n/nrow(df)*100, digits = 1))
 ```
 
+## Regressione logistica
 
-## Campionamento e sottocampionamento
+### Specificazione modello
 
 ```{r}
-df_rec_rose = 
-  recipe(fraud ~ ., data = df) %>% 
-  step_rose(fraud)
-
-df_rec = 
-  recipe(fraud ~ ., data = df)
+log_mod = logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
 ```
 
-## Modello
+### Workflow
 
 ```{r}
-qda_mod = 
-  discrim_regularized(frac_common_cov = 0, frac_identity = 0) %>% 
-  set_engine("klaR")
+log_wflw = 
+  workflow() %>% 
+  add_model(log_mod) %>% 
+  add_recipe(df_rec)
+```
 
+### Performance modello
+
+```{r}
+log_fit = fit(log_wflw, data_train)
+
+lev.p.value = c("very low confidence", "low confidence", "confidence", "high confidence", "very high confidence")
+log_coef = log_fit %>% 
+  tidy() %>%
+  mutate(OR = exp(estimate),
+         OR.conf.low = exp(estimate - 1.96*std.error),
+         OR.conf.high = exp(estimate + 1.96*std.error),
+         p.value.level = case_when(p.value > .1 ~ lev.p.value[1],
+                                   p.value > .05 ~ lev.p.value[2],
+                                   p.value > .01 ~ lev.p.value[3],
+                                   p.value > .001 ~ lev.p.value[4],
+                                   .default = lev.p.value[5])) %>% 
+  mutate(p.value.level = factor(p.value.level, levels = lev.p.value, ordered = T))
+log_coef
+```
+
+
+```{r}
+grafico = log_coef %>% 
+  ggplot(aes(x = term, y = OR, ymin = OR.conf.low,
+             ymax = OR.conf.high, color = p.value.level)) +
+  geom_pointrange() +
+  scale_x_discrete(labels = str_sub(log_coef$term,end = 10)) +
+  scale_color_brewer(palette = "Spectral", direction = -1) +
+  xlab("Coefficienti") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(vjust = 1, size = 8, angle = 90)) 
+  
+grafico
+
+ggplotly(grafico)
+```
+
+### Valutazione del modello
+
+```{r}
+# Soft predictions
+logistic_output <-  data_test %>%
+  bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) 
+
+# Hard predictions (you pick threshold)
+logistic_output <- data_test %>%
+  bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) %>%
+  mutate(.pred_class = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = .45)) #Try changing threshold (.5, 0, 1, .2, .8)
+
+# Visualize Soft Predictions
+logistic_output %>%
+  ggplot(aes(x = fraud, y = `.pred_No fraud`)) +
+  geom_boxplot() + 
+  geom_hline(yintercept = 0.45, color='red') +  # try changing threshold
+  labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
+  theme_classic()
+
+
+# Visualize Soft Predictions
+logistic_output %>%
+  ggplot(aes(x = fraud, y = `.pred_No fraud`)) +
+  geom_violin(fill = "blue4") + 
+  geom_hline(yintercept = 0.5, color='red') +  # try changing threshold
+  geom_hline(yintercept = 0.97, color='red') +  # try changing threshold
+  labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
+  scale_y_percent() +
+  theme_classic()
+```
+
+```{r}
+# Confusion Matrix
+logistic_output %>%
+  conf_mat(truth = fraud, estimate = .pred_class)
+
+log_metrics <- metric_set(sens, yardstick::spec, accuracy,yardstick::precision) # these metrics are based on hard predictions
+
+#sens: sensitivity = chance of correctly predicting second level, given second level (Yes)
+#spec: specificity = chance of correctly predicting first level, given first level (No)
+#accuracy: accuracy = chance of correctly predicting outcome
+
+logistic_output %>% 
+  log_metrics(estimate = .pred_class, truth = fraud, event_level = "second",) 
+```
+
+```{r}
+logistic_roc <- logistic_output %>% 
+    roc_curve(fraud, .pred_Fraud, event_level = "second") # set second level of outcome as "success"
+
+autoplot(logistic_roc) + 
+  theme_classic()
+```
+
+### Ricampionamento
+
+```{r}
+set.seed(1)
+cv_folds = vfold_cv(data_train, strata = "fraud",repeats = 4)
+
+cv_fold
+```
+
+
+```{r}
+log_metrics = metric_set(sens, yardstick::spec, accuracy)
+
+set.seed(1)
+log_res = fit_resamples(
+  log_wflw, 
+  control = control_resamples(save_pred = TRUE, event_level = 'second'),
+  resamples = cv_folds,
+  metrics = log_metrics
+)
+
+collect_metrics(log_res)
+```
+
+## Albero di classificazione
+
+### Definizione del modello
+
+```{r}
 ct_mod = decision_tree() %>%
   set_engine(engine = 'rpart') %>%
   set_args(cost_complexity = NULL,  #default is 0.01 (used for pruning a tree)
            min_n = NULL, #min number of observations to try split: default is 20 [I think the documentation has a typo and says 2]  (used to stop early)
-           tree_depth = NULL) %>% #max depth, number of branches/splits to get to any final group: default is 30 (used to stop early)
+           tree_depth = 30) %>% #max depth, number of branches/splits to get to any final group: default is 30 (used to stop early)
   set_mode('classification') # change this for regression tree
 ```
 
-## Workflow
+### Workflow
 
 ```{r}
-qda_rose_wflw = 
-  workflow() %>% 
-  add_model(qda_mod) %>% 
-  add_recipe(df_rec_rose)
-
-qda_rose_wflw
-
-
-ct_rose_wflw = 
-  workflow() %>% 
-  add_model(ct_mod) %>% 
-  add_recipe(df_rec_rose)
-
-ct_rose_wflw
-
 ct_wflw = 
   workflow() %>% 
   add_model(ct_mod) %>% 
-  add_recipe(df_rec)
+  add_recipe(df_rec %>% 
+               prep(include = FALSE, steps = "step_rose"))
 
 ct_wflw
 ```
-## Performance modello
+
+### Performance modello
 
 ```{r}
-set.seed(1)
-cv_folds = vfold_cv(df, strata = "fraud", repeats = 10)
+ct_fit = fit(ct_wflw, data_train)
 
-cls_metrics = metric_set(roc_auc, j_index)
+collect_metrics(ct_fit)
 ```
 
-## Fit modello
+### Ricampionamento
 
 ```{r}
+cls_metrics = metric_set(roc_auc, j_index)
+
 set.seed(1)
 ct_res = fit_resamples(
   ct_wflw, 
   resamples = cv_folds, 
   metrics = cls_metrics
 )
-
 collect_metrics(ct_res)
+```
+
+## Random Forest
+
+### Specificazione modello
+
+```{r}
+rf_mod <- rand_forest() %>%
+  set_engine(engine = 'ranger') %>% 
+  set_args(mtry = NULL, # size of random subset of variables; default is floor(sqrt(number of total predictors))
+           trees = 1000, # Number of trees
+           min_n = 2,
+           probability = FALSE, # FALSE: get hard predictions (not needed for regression)
+           importance = 'impurity') %>% # we'll come back to this at the end
+  set_mode('classification') # change this for regression
+```
+
+### Workflows
+
+```{r}
+rf_wflw_mtry2 <- workflow() %>%
+  add_model(rf_mod %>% set_args(mtry = 2)) %>%
+  add_recipe(df_rec)
+
+rf_wflw_mtry12 <- workflow() %>%
+  add_model(rf_mod %>% set_args(mtry = 12)) %>%
+  add_recipe(df_rec)
+
+rf_wflw_mtry74 <- workflow() %>%
+  add_model(rf_mod %>% set_args(mtry = 74)) %>%
+  add_recipe(df_rec)
+
+rf_wflw_mtry147 <- workflow() %>%
+  add_model(rf_mod %>% set_args(mtry = 147)) %>%
+  add_recipe(df_rec)
+```
+
+### Fit dei modelli
+
+```{r}
+set.seed(123) # make sure to run this before each fit so that you have the same 1000 trees
+data_fit_mtry2 <- fit(rf_wflw_mtry2, data = data_train)
+
+# Fit models for 12, 74, 147
+set.seed(123) 
+rf_fit_mtry12 <- fit(rf_wflw_mtry12, data = data_train)
+
+set.seed(123)
+rf_fit_mtry74 <- fit(rf_wflw_mtry74, data = data_train)
+
+set.seed(123) 
+rf_fit_mtry147 <- fit(rf_wflw_mtry147, data = data_train)
+```
+
+
+
+
+# Seconda versione del dataset
+
+```{r}
+df2 = df %>% 
+  mutate_at(vars(c(customer_age, income, email_is_free, proposed_credit_limit,
+                   phone_home_valid, phone_mobile_valid, device_distinct_emails_8w,
+                   foreign_request, has_other_cards, keep_alive_session, month)),
+            ~ as.numeric(.)) 
+df2
+```
+
+
+## Modelli
+
+### Divisione dei dati
+
+```{r}
+data_split2 = initial_split(df2, prop = 3/4, strata = "fraud")
+
+data_train2 = training(data_split2)
+data_test2 = testing(data_split2)
+```
+
+
+### Preprocessamento
+```{r}
+df_rec2_rose = 
+  recipe(fraud ~ ., data = data_train2) %>% 
+  # step_novel(all_nominal_predictors()) %>% 
+  # step_normalize(all_numeric_predictors()) %>% 
+  # step_dummy(all_nominal_predictors()) %>% 
+  step_rose(fraud) %>% 
+  step_zv(all_nominal_predictors())  
+```
+
+### Albero di classificazione
+
+```{r}
+ct_mod = decision_tree() %>%
+  set_engine(engine = 'rpart') %>%
+  set_args(cost_complexity = 0.01,  #default is 0.01 (used for pruning a tree)
+           min_n = 100, #min number of observations to try split: default is 20 [I think the documentation has a typo and says 2]  (used to stop early)
+           tree_depth = 30) %>% #max depth, number of branches/splits to get to any final group: default is 30 (used to stop early)
+  set_mode('classification') # change this for regression tree
+```
+
+#### Workflow
+
+```{r}
+ct_wflw = 
+  workflow() %>% 
+  add_model(ct_mod) %>% 
+  add_recipe(df_rec2_rose)
+
+ct_wflw
+```
+#### Bake and juice
+
+```{r}
+df_pre = df_rec2_rose %>% 
+  prep(new_data = NULL) %>% 
+  juice()
+df_pre
+```
+
+#### Performance modello
+
+```{r}
+ct_fit = fit(ct_wflw, data_train2)
+
+ct_fit %>% 
+  extract_fit_engine() %>% 
+  rpart.plot::rpart.plot()
+```
+
+```{r}
+ct_fit %>% 
+  extract_fit_engine() %>% 
+  # pluck('variable.importance') %>% 
+  vip::vip()
+```
+
+#### Tune
+
+```{r}
+data_fold = vfold_cv(data_train2, v = 10)
+
+ct_spec_tune = decision_tree() %>% 
+  set_engine(engine = "rpart") %>% 
+  set_args(cost_complexity = tune(),
+           min_n = 20,
+           tree_depth = NULL) %>% 
+  set_mode("classification")
+
+ct_tune_wflw = workflow() %>% 
+  add_model(ct_spec_tune) %>% 
+  add_recipe(df_rec2_rose)  
+
+param_grid = grid_regular(cost_complexity(range = c(-5,1)), levels = 10)  
+
+tune_res = tune_grid(
+  ct_tune_wflw,
+  resamples = data_fold,
+  grid = param_grid,
+  metrics = metric_set(accuracy)
+)
+```
+
+### Random forest
+
+```{r}
+# Model Specification
+rf_spec <- rand_forest() %>%
+  set_engine(engine = 'ranger') %>% 
+  set_args(mtry = NULL, # size of random subset of variables; default is floor(sqrt(number of total predictors))
+           trees = 500, # Number of trees
+           min_n = 50,
+           probability = FALSE, # FALSE: get hard predictions (not needed for regression)
+           importance = 'impurity') %>% # we'll come back to this at the end
+  set_mode('classification') # change this for regression
+
+# Recipe
+data_rec <- recipe(class ~ ., data = land)
+
+# Workflows
+data_wf_mtry2 <- workflow() %>%
+  add_model(rf_spec %>% set_args(mtry = 2)) %>%
+  add_recipe(df_rec2_rose)
+```
+
+```{r}
+# Fit Models
+set.seed(123) # make sure to run this before each fit so that you have the same 1000 trees
+rf_fit_mtry2 <- fit(data_wf_mtry2, data = data_train)
+```
+
+
+```{r}
+rf_out_mtry2 = rf_fit_mtry2 %>% 
+  extract_fit_engine()
+
+rf_out_mtry2 %>% 
+  vip::vip()
+```
+
+```{r}
+rf_out_mtry2 %>% vip::vi()
+```
+
+```{r}
+
+rf_pred_mtry2 = predict(rf_fit_mtry2,
+                    new_data = data_test,
+                    type = 'class')
+
+data_test %>%
+  select(fraud) %>% 
+  bind_cols(rf_pred_mtry2) %>% 
+  conf_mat(truth = fraud, estimate = .pred_class)
+```
+```{r}
+a = data_test %>%
+  select(fraud) %>% 
+  transmute_all( ~relevel(as.factor(.),"Fraud")) %>% 
+  # bind_cols(rf_pred_mtry2)
+  bind_cols(logistic_output %>%
+              select(.pred_class) %>% 
+              mutate_all(as.factor) %>% 
+              relevel())
+a$fraud = relevel(a$fraud, "Fraud")
+a$.pred_class = relevel(a$.pred_class, "Fraud")
+
+caret::confusionMatrix(a$fraud,a$.pred_class)
+```
+
+```{r}
+parallel::detectCores()
+```
+```{r}
+rf_fit_mtry2 %>%
+  extract_fit_engine()
 ```
 
