@@ -253,14 +253,42 @@ for(i in 1:4) print(grafici[[i]])
 ```{r}
 # df[c(1:1000, 50000:51000),] %>% 
 df %>% 
-  select(is.numeric) %>% 
-  select(where(~ length(levels(factor(.))) > 2)) %>% 
+  mutate(fraud = as.numeric(fraud)) %>% 
+  select(where(is.numeric)) %>% 
+  # select(where(~ length(levels(factor(.))) > 2)) %>% 
   rename_all(~ str_trunc(., width = 15)) %>% 
   scale() %>% 
   cor() %>% 
   corrplot::corrplot(cl.cex = 0.5,
                      type = "lower",
                     tl.pos = "l")
+```
+Il seguente grafico mostra in modo diretto la correlazione della variabile fraud con le altre variabili del modello. 
+Ovviamente, non è rappresentata la multicollinearità tra le altre variabili, come mostrato nel grafico soprastante.
+
+```{r}
+df %>% 
+  mutate(fraud = as.numeric(fraud)) %>% 
+  select(where(is.numeric)) %>% 
+  # select(where(~ length(levels(factor(.))) > 2)) %>% 
+  rename_all(~ str_trunc(., width = 15)) %>% 
+  scale() %>% 
+  cor() %>% 
+  data.frame() %>%
+  rownames_to_column("Variabili") %>% 
+  tibble() %>% 
+  select(Variabili,fraud) %>% 
+  mutate(Variabili = as.factor(Variabili)) %>% 
+  filter(fraud<1) %>% 
+  ggplot(aes(x = Variabili, y = fraud, fill = fraud)) +
+  geom_col(color = "gray45") +
+  coord_flip() +
+  scale_fill_gradient2(low = "mediumspringgreen",
+                       high = "mediumvioletred",
+                       midpoint = 0) + 
+  theme_bw() +
+  theme(legend.position = "none")
+
 ```
 
 
@@ -296,7 +324,7 @@ df_rec =
   step_normalize(all_numeric_predictors()) %>% 
   step_dummy(all_nominal_predictors()) %>% 
   step_rose(fraud) %>% 
-  step_zv(all_nominal_predictors())  
+  step_zv(all_nominal_predictors())
 ```
 
 ### Campionamento e sottocampionamento
@@ -599,7 +627,6 @@ ct_wflw =
   workflow() %>% 
   add_model(ct_mod) %>% 
   add_recipe(df_rec2_rose)
-
 ct_wflw
 ```
 #### Bake and juice
@@ -728,4 +755,25 @@ parallel::detectCores()
 rf_fit_mtry2 %>%
   extract_fit_engine()
 ```
+
+
+# Dataframe ridotto
+
+Per problemi computazionali, dovuti alla grande quantità di dati e di features, si è deciso di ridurre la dimensione del campione riducendo del 95% le osservazioni.
+L'obiettivo del lavoro è quello di creare un modello che identifichi le frodi bancarie, perciò nella riduzione del dataframe è stato scelto di conservare tutte le osservazioni nelle quali è stata commessa una frode.
+
+```{r}
+# dfRid = ovun.sample(fraud ~.,
+#                  data = df,
+#                  method = "under",
+#                  p = 0.5,
+#                  seed = 1)$data %>% tibble
+dfRid = df
+table(dfRid$fraud)
+```
+
+
+
+
+
 
