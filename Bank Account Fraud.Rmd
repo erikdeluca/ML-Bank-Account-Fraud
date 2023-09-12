@@ -16,7 +16,7 @@ output:
 
 # Librerie
 
-```{r, include=FALSE}
+```{r, include}
 library(gbm)
 library(randomForest)
 library(ROSE)
@@ -572,6 +572,9 @@ rf_fit_mtry147 <- fit(rf_wflw_mtry147, data = data_train)
 ```
 
 
+```{r}
+collect_metrics(rf_fit_mtry2)
+```
 
 
 # Seconda versione del dataset
@@ -629,6 +632,7 @@ ct_wflw =
   add_recipe(df_rec2_rose)
 ct_wflw
 ```
+
 #### Bake and juice
 
 ```{r}
@@ -768,12 +772,272 @@ L'obiettivo del lavoro è quello di creare un modello che identifichi le frodi b
 #                  method = "under",
 #                  p = 0.5,
 #                  seed = 1)$data %>% tibble
-dfRid = df
+dfRid = df %>% 
+  filter(fraud == "Fraud") %>% 
+  add_row(df %>% 
+                filter(fraud != "Fraud") %>% 
+                slice_sample(n = nrow(df)*0.05 - nrow(filter(df, fraud == "Fraud"))))
+
+dfRid
+```
+
+L'attuale dataframe contiene ancora le classi sbilanciate, si procederà quindi al ribilanciamento attraverso el diverse tecniche di ricampionamento
+
+```{r}
 table(dfRid$fraud)
+```
+
+## Variabile fraud
+
+```{r, warning=FALSE}
+apply(matrix(1:(ncol(dfChar) - 1)),1, function(indexCol)
+# apply(matrix(1:2),1, function(indexCol)
+{
+dfRid %>% 
+  select(where(is.factor)) %>%  
+  ggplot(aes(x = get(colnames(dfChar)[indexCol]), group = fraud)) +
+  geom_bar(aes(y = ..prop.., fill =  fraud), stat = "count") +
+  scale_y_continuous(labels=scales::percent) +
+  xlab(colnames(dfChar)[indexCol]) +
+  ylab("Osservazioni") +
+  theme_ipsum() +
+  theme(legend.position="none")
+}
+)
+```
+
+
+## Correlazione
+
+
+```{r}
+dfRid %>% 
+  mutate(fraud = as.numeric(fraud)) %>% 
+  select(where(is.numeric)) %>% 
+  rename_all(~ str_trunc(., width = 15)) %>% 
+  scale() %>% 
+  cor() %>% 
+  corrplot::corrplot(cl.cex = 0.5,
+                     type = "lower",
+                    tl.pos = "l")
 ```
 
 
 
+```{r}
+dfRid %>% 
+  mutate(fraud = as.numeric(fraud)) %>% 
+  select(where(is.numeric)) %>% 
+  # select(where(~ length(levels(factor(.))) > 2)) %>% 
+  rename_all(~ str_trunc(., width = 15)) %>% 
+  scale() %>% 
+  cor() %>% 
+  data.frame() %>%
+  rownames_to_column("Variabili") %>% 
+  tibble() %>% 
+  select(Variabili,fraud) %>% 
+  mutate(Variabili = as.factor(Variabili)) %>% 
+  filter(fraud<1) %>% 
+  ggplot(aes(x = Variabili, y = fraud, fill = fraud)) +
+  geom_col(color = "gray45") +
+  coord_flip() +
+  scale_fill_gradient2(low = "mediumspringgreen",
+                       high = "mediumvioletred",
+                       midpoint = 0) + 
+  theme_bw() +
+  theme(legend.position = "none")
+
+```
+
+## Preprocessamento
+
+```{r}
+data_split = initial_split(dfRid, prop = 3/4, strata = "fraud")
+
+data_train = training(data_split)
+data_test = testing(data_split)
+```
 
 
+```{r}
+df_rec = 
+  recipe(fraud ~ ., data = data_train) %>% 
+  step_novel(all_nominal_predictors()) %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_zv(all_nominal_predictors())
+```
 
+## Regressione logistica
+
+### Specificazione modello
+
+```{r}
+log_mod = logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+```
+
+Imposto il workflow, aggiungendo il modello e il preprocessamento dei dati
+
+```{r}
+log_wflw = 
+  workflow() %>% 
+  add_model(log_mod) %>% 
+  add_recipe(df_rec)
+```
+
+### Performance modello
+
+```{r}
+log_fit = fit(log_wflw, data_train)
+
+lev.p.value = c("very low confidence", "low confidence", "confidence", "high confidence", "very high confidence")
+log_coef = log_fit %>% 
+  tidy() %>%
+  mutate(OR = exp(estimate),
+         OR.conf.low = exp(estimate - 1.96*std.error),
+         OR.conf.high = exp(estimate + 1.96*std.error),
+         p.value.level = case_when(p.value > .1 ~ lev.p.value[1],
+                                   p.value > .05 ~ lev.p.value[2],
+                                   p.value > .01 ~ lev.p.value[3],
+                                   p.value > .001 ~ lev.p.value[4],
+                                   .default = lev.p.value[5])) %>% 
+  mutate(p.value.level = factor(p.value.level, levels = lev.p.value, ordered = T))
+log_coef
+```
+
+
+```{r}
+creaGruppoVariabili = function(data, varOrig, colVar)
+{
+  macroGruppi = matrix(nrow = nrow(data))
+  for(i in 1:nrow(data))
+  {
+    if(data[i,colVar] == "(Intercept)")
+    {
+      macroGruppi[i,1] = "Intercetta"
+    }else
+    {
+      if(sum(str_equal(data[i,colVar], varOrig))==1)
+      {
+        macroGruppi[i,1] = data[i,colVar] %>% as.character()
+      }else
+      {
+        data[i,colVar] = data[i,colVar] %>% 
+          str_sub(end = data[i,colVar] %>% 
+                    str_locate_all(pattern = "_") %>% 
+                    unlist() %>% 
+                    tail(1) - 1)
+        macroGruppi[i,1] = data[i,colVar] %>% as.character()
+      }
+    }
+  }
+  return(macroGruppi)
+}
+
+grafico = log_coef %>%
+  mutate(Variabili = creaGruppoVariabili(log_coef, names(dfRid), "term")) %>% 
+  ggplot(aes(x = Variabili, y = OR, ymin = OR.conf.low,
+             ymax = OR.conf.high, color = p.value.level, label = term)) +
+  geom_pointrange(position = "jitter") +
+  coord_flip() +
+  scale_x_discrete(labels = str_sub(names(dfRid),end = 10)) +
+  scale_color_brewer(palette = "RdYlGn") +
+  # scale_color_gradient2(low = "springgreen",
+  #                       high = "tomato",
+  #                       mid = "orange",
+  #                       midpoint = .05, 
+  #                       na.value = "gray") +
+  xlab("Coefficienti") +
+  geom_hline(aes(yintercept = 1), color = "tomato") +
+  ylim(c(min(log_coef$OR.conf.low),2*median(log_coef$OR.conf.high, na.rm = T))) +
+  theme(legend.position = "top", 
+        legend.box = "horizontal",
+        legend.title = element_text(size = 9),
+        legend.text = element_text(size = 7),
+        axis.text.x = element_text(vjust = 1, size = 8)) 
+
+# grafico
+
+ggplotly(grafico)
+```
+
+### Valutazione del modello
+
+```{r}
+# Soft predictions
+logistic_output <-  data_test %>%
+  bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) 
+
+# Hard predictions (you pick threshold)
+logistic_output <- data_test %>%
+  bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) %>%
+  mutate(.pred_class = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = .45)) #Try changing threshold (.5, 0, 1, .2, .8)
+
+# Visualize Soft Predictions
+logistic_output %>%
+  ggplot(aes(x = fraud, y = `.pred_No fraud`)) +
+  geom_boxplot() + 
+  geom_hline(yintercept = 0.45, color='red') +  # try changing threshold
+  labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
+  theme_classic()
+
+
+# Visualize Soft Predictions
+logistic_output %>%
+  ggplot(aes(x = fraud, y = `.pred_No fraud`)) +
+  geom_violin(fill = "blue4") + 
+  geom_hline(yintercept = 0.5, color='red') +  # try changing threshold
+  geom_hline(yintercept = 0.97, color='red') +  # try changing threshold
+  labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
+  scale_y_percent() +
+  theme_classic()
+```
+
+```{r}
+# Confusion Matrix
+logistic_output %>%
+  conf_mat(truth = fraud, estimate = .pred_class)
+
+log_metrics <- metric_set(sens, yardstick::spec, accuracy,yardstick::precision) # these metrics are based on hard predictions
+
+#sens: sensitivity = chance of correctly predicting second level, given second level (Yes)
+#spec: specificity = chance of correctly predicting first level, given first level (No)
+#accuracy: accuracy = chance of correctly predicting outcome
+
+logistic_output %>% 
+  log_metrics(estimate = .pred_class, truth = fraud, event_level = "second",) 
+```
+
+```{r}
+logistic_roc <- logistic_output %>% 
+    roc_curve(fraud, .pred_Fraud, event_level = "second") # set second level of outcome as "success"
+
+autoplot(logistic_roc) + 
+  theme_classic()
+```
+
+### Ricampionamento
+
+```{r}
+set.seed(1)
+cv_folds = vfold_cv(data_train, strata = "fraud",repeats = 4)
+
+cv_folds
+```
+
+
+```{r}
+log_metrics = metric_set(sens, yardstick::spec, accuracy)
+
+set.seed(1)
+log_res = fit_resamples(
+  log_wflw, 
+  control = control_resamples(save_pred = TRUE, event_level = 'second'),
+  resamples = cv_folds,
+  metrics = log_metrics
+)
+
+collect_metrics(log_res)
+```
