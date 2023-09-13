@@ -204,7 +204,7 @@ apply(matrix(1:2),1, function(indexCol)
 
 ## Variabile fraud con le varibili indipendenti
 
-```{r}
+```{r, warning=FALSE}
 df %>% 
   group_by(fraud) %>%
   summarise_if(is.numeric,mean) %>% 
@@ -214,6 +214,8 @@ df %>%
   as.matrix() %>% 
   t() %>% 
   janitor::row_to_names(row_number = 1) %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Variabili") %>% 
   tibble()
 ```
 ```{r, warning=FALSE}
@@ -296,7 +298,7 @@ df %>%
 
 ## Divisione dei dati
 
-```{r}
+```{r, eval=FALSE}
 data_split = initial_split(df, prop = 3/4, strata = "fraud")
 
 data_train = training(data_split)
@@ -317,7 +319,7 @@ Inoltre, sarà comodo per capire il peso dei coefficienti nel modello.
 
 `step_zv(all_nominal_predictors())`: Rimuove le variabili categoriche che hanno varianza zero, il che significa che sono costanti e non portano alcuna informazione predittiva.
 
-```{r}
+```{r, eval=FALSE}
 df_rec = 
   recipe(fraud ~ ., data = data_train) %>% 
   step_novel(all_nominal_predictors()) %>% 
@@ -329,7 +331,7 @@ df_rec =
 
 ### Campionamento e sottocampionamento
 
-```{r}
+```{r, eval=FALSE}
 df %>% 
   select(fraud) %>% 
   table() %>%
@@ -341,7 +343,7 @@ df %>%
 
 ### Specificazione modello
 
-```{r}
+```{r, eval=FALSE}
 log_mod = logistic_reg() %>% 
   set_engine("glm") %>% 
   set_mode("classification")
@@ -349,7 +351,7 @@ log_mod = logistic_reg() %>%
 
 ### Workflow
 
-```{r}
+```{r,eval=FALSE}
 log_wflw = 
   workflow() %>% 
   add_model(log_mod) %>% 
@@ -358,9 +360,12 @@ log_wflw =
 
 ### Performance modello
 
-```{r}
+```{r,eval=FALSE}
 log_fit = fit(log_wflw, data_train)
+```
 
+
+```{r}
 lev.p.value = c("very low confidence", "low confidence", "confidence", "high confidence", "very high confidence")
 log_coef = log_fit %>% 
   tidy() %>%
@@ -374,21 +379,59 @@ log_coef = log_fit %>%
                                    .default = lev.p.value[5])) %>% 
   mutate(p.value.level = factor(p.value.level, levels = lev.p.value, ordered = T))
 log_coef
+
 ```
 
 
 ```{r}
-grafico = log_coef %>% 
-  ggplot(aes(x = term, y = OR, ymin = OR.conf.low,
-             ymax = OR.conf.high, color = p.value.level)) +
-  geom_pointrange() +
-  scale_x_discrete(labels = str_sub(log_coef$term,end = 10)) +
-  scale_color_brewer(palette = "Spectral", direction = -1) +
+creaGruppoVariabili = function(data, varOrig, colVar)
+{
+  macroGruppi = matrix(nrow = nrow(data))
+  for(i in 1:nrow(data))
+  {
+    if(data[i,colVar] == "(Intercept)")
+    {
+      macroGruppi[i,1] = "Intercetta"
+    }else
+    {
+      if(sum(str_equal(data[i,colVar], varOrig))==1)
+      {
+        macroGruppi[i,1] = data[i,colVar] %>% as.character()
+      }else
+      {
+        data[i,colVar] = data[i,colVar] %>% 
+          str_sub(end = data[i,colVar] %>% 
+                    str_locate_all(pattern = "_") %>% 
+                    unlist() %>% 
+                    tail(1) - 1)
+        macroGruppi[i,1] = data[i,colVar] %>% as.character()
+      }
+    }
+  }
+  return(macroGruppi)
+}
+
+grafico = log_coef %>%
+  mutate(Variabili = creaGruppoVariabili(log_coef, names(df), "term")) %>% 
+  ggplot(aes(x = Variabili, y = OR, ymin = OR.conf.low,
+             ymax = OR.conf.high, color = p.value.level, label = term)) +
+  geom_pointrange(position = "jitter") +
+  coord_flip() +
+  scale_x_discrete(labels = str_sub(names(dfRid),end = 10)) +
+  scale_color_brewer(palette = "RdYlGn") +
+  # scale_color_gradient2(low = "springgreen",
+  #                       high = "tomato",
+  #                       mid = "orange",
+  #                       midpoint = .05, 
+  #                       na.value = "gray") +
   xlab("Coefficienti") +
-  theme(legend.position = "none",
-        axis.text.x = element_text(vjust = 1, size = 8, angle = 90)) 
-  
-grafico
+  geom_hline(aes(yintercept = 1), color = "tomato") +
+  ylim(c(min(log_coef$OR.conf.low),2*median(log_coef$OR.conf.high, na.rm = T))) +
+  theme(legend.position = "top", 
+        legend.box = "horizontal",
+        legend.title = element_text(size = 9),
+        legend.text = element_text(size = 7),
+        axis.text.x = element_text(vjust = 1, size = 8)) 
 
 ggplotly(grafico)
 ```
