@@ -25,4 +25,3 @@ creaGruppoVariabili = function(data, varOrig, colVar)
   return(macroGruppi)
 }
 creaGruppoVariabili(log_coef, names(dfRid), "term")
-

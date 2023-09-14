@@ -218,6 +218,7 @@ df %>%
   rownames_to_column("Variabili") %>% 
   tibble()
 ```
+
 ```{r, warning=FALSE}
 grafici = lapply(1:4,function(x)
 {
@@ -245,6 +246,7 @@ grafici = lapply(1:4,function(x)
 )
 
 for(i in 1:4) print(grafici[[i]])
+rm(grafici)
 ```
 
 
@@ -378,9 +380,15 @@ log_coef = log_fit %>%
                                    p.value > .001 ~ lev.p.value[4],
                                    .default = lev.p.value[5])) %>% 
   mutate(p.value.level = factor(p.value.level, levels = lev.p.value, ordered = T))
-log_coef
-
 ```
+
+```{r,echo=FALSE}
+log_fit = readRDS("var/log_fit")
+rm(log_fit)
+gc()
+log_coef
+```
+
 
 
 ```{r}
@@ -414,11 +422,15 @@ creaGruppoVariabili = function(data, varOrig, colVar)
 grafico = log_coef %>%
   mutate(Variabili = creaGruppoVariabili(log_coef, names(df), "term")) %>% 
   ggplot(aes(x = Variabili, y = OR, ymin = OR.conf.low,
-             ymax = OR.conf.high, color = p.value.level, label = term)) +
+             ymax = OR.conf.high, color = p.value, label = term)) +
   geom_pointrange(position = "jitter") +
   coord_flip() +
-  scale_x_discrete(labels = str_sub(names(dfRid),end = 10)) +
-  scale_color_brewer(palette = "RdYlGn") +
+  scale_x_discrete(labels = str_sub(names(df),end = 10)) +
+  scale_color_gradient2(low = "mediumspringgreen",
+                        mid = "mediumvioletred",
+                       high = "mediumvioletred",
+                       midpoint = 0.4) +
+  # scale_color_brewer(palette = palette(palette.colors(palette = "RdYlGn"))) +
   # scale_color_gradient2(low = "springgreen",
   #                       high = "tomato",
   #                       mid = "orange",
@@ -427,7 +439,7 @@ grafico = log_coef %>%
   xlab("Coefficienti") +
   geom_hline(aes(yintercept = 1), color = "tomato") +
   ylim(c(min(log_coef$OR.conf.low),2*median(log_coef$OR.conf.high, na.rm = T))) +
-  theme(legend.position = "top", 
+  theme(legend.position = "none", 
         legend.box = "horizontal",
         legend.title = element_text(size = 9),
         legend.text = element_text(size = 7),
@@ -438,128 +450,89 @@ ggplotly(grafico)
 
 ### Valutazione del modello
 
-```{r}
-# Soft predictions
-logistic_output <-  data_test %>%
-  bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) 
+Dalle probabilità creo la predizione della classe in base al threshold impostato, per ora pongo 0.5. successivamente lo andrò ad adattare per trovare la soluzione migliore al problema.
 
-# Hard predictions (you pick threshold)
+```{r, eval=FALSE}
 logistic_output <- data_test %>%
   bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) %>%
-  mutate(.pred_class = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = .45)) #Try changing threshold (.5, 0, 1, .2, .8)
+  mutate(.pred_class = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = .5))
 
-# Visualize Soft Predictions
+```
+
+
+
+```{r}
 logistic_output %>%
   ggplot(aes(x = fraud, y = `.pred_No fraud`)) +
-  geom_boxplot() + 
-  geom_hline(yintercept = 0.45, color='red') +  # try changing threshold
-  labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
-  theme_classic()
-
-
-# Visualize Soft Predictions
-logistic_output %>%
-  ggplot(aes(x = fraud, y = `.pred_No fraud`)) +
-  geom_violin(fill = "blue4") + 
-  geom_hline(yintercept = 0.5, color='red') +  # try changing threshold
-  geom_hline(yintercept = 0.97, color='red') +  # try changing threshold
+  geom_violin(fill = "mediumspringgreen", alpha = .6) + 
+  geom_hline(yintercept = 0.5, color='mediumvioletred') +  # try changing threshold
+  geom_hline(yintercept = 0.73, color='mediumvioletred') +  # try changing threshold
   labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
   scale_y_percent() +
   theme_classic()
 ```
 
+Osservo le metriche delle predizioni del modello con il threshold impostato al 0.5.
+Le metriche scelte in questo caso sono la sensitività, specificità, accuratezza e precione. 
+
+
 ```{r}
-# Confusion Matrix
-logistic_output %>%
-  conf_mat(truth = fraud, estimate = .pred_class)
-
-log_metrics <- metric_set(sens, yardstick::spec, accuracy,yardstick::precision) # these metrics are based on hard predictions
-
-#sens: sensitivity = chance of correctly predicting second level, given second level (Yes)
-#spec: specificity = chance of correctly predicting first level, given first level (No)
-#accuracy: accuracy = chance of correctly predicting outcome
+log_metrics = metric_set(sens, yardstick::spec, accuracy,yardstick::precision) 
 
 logistic_output %>% 
-  log_metrics(estimate = .pred_class, truth = fraud, event_level = "second",) 
+  log_metrics(estimate = .pred_class, truth = fraud, event_level = "second") 
 ```
+#### Matrice di confusione
+
+<!-- Attraverso la curva ROC vado a cercare la migliore soluzione tra FPR e TPR (recall) in modo tale da trovare il threshold che massimizza la specificità con la sensitività al più del 95%. -->
+
+Il threshold per trovare un recall del 5% è stato impostato a 0,73.
 
 ```{r}
-logistic_roc <- logistic_output %>% 
-    roc_curve(fraud, .pred_Fraud, event_level = "second") # set second level of outcome as "success"
+log_roc = logistic_output %>% 
+    roc_curve(fraud, .pred_Fraud, event_level = "second")  # con second dico che la seconda classe (fraud) è la classe che è interesse di studio
+  
 
-autoplot(logistic_roc) + 
-  theme_classic()
+# log_bestThreshold = log_roc %>% 
+#   filter(sensitivity > 0.5) %>% 
+#   filter(specificity == max(specificity))
+
+logistic_output %>%
+  # mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = log_bestThreshold$.threshold)) %>% 
+  mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = 0.73)) %>% 
+  select(fraud,pred_best) %>% 
+  table() %>% 
+  caret::confusionMatrix(positive = "Fraud")
 ```
 
-### Ricampionamento
+
+#### Curva ROC
 
 ```{r}
-set.seed(1)
-cv_folds = vfold_cv(data_train, strata = "fraud",repeats = 4)
-
-cv_fold
-```
-
-
-```{r}
-log_metrics = metric_set(sens, yardstick::spec, accuracy)
-
-set.seed(1)
-log_res = fit_resamples(
-  log_wflw, 
-  control = control_resamples(save_pred = TRUE, event_level = 'second'),
-  resamples = cv_folds,
-  metrics = log_metrics
-)
-
-collect_metrics(log_res)
-```
-
-## Albero di classificazione
-
-### Definizione del modello
-
-```{r}
-ct_mod = decision_tree() %>%
-  set_engine(engine = 'rpart') %>%
-  set_args(cost_complexity = NULL,  #default is 0.01 (used for pruning a tree)
-           min_n = NULL, #min number of observations to try split: default is 20 [I think the documentation has a typo and says 2]  (used to stop early)
-           tree_depth = 30) %>% #max depth, number of branches/splits to get to any final group: default is 30 (used to stop early)
-  set_mode('classification') # change this for regression tree
-```
-
-### Workflow
-
-```{r}
-ct_wflw = 
-  workflow() %>% 
-  add_model(ct_mod) %>% 
-  add_recipe(df_rec %>% 
-               prep(include = FALSE, steps = "step_rose"))
-
-ct_wflw
-```
-
-### Performance modello
-
-```{r}
-ct_fit = fit(ct_wflw, data_train)
-
-collect_metrics(ct_fit)
-```
-
-### Ricampionamento
-
-```{r}
-cls_metrics = metric_set(roc_auc, j_index)
-
-set.seed(1)
-ct_res = fit_resamples(
-  ct_wflw, 
-  resamples = cv_folds, 
-  metrics = cls_metrics
-)
-collect_metrics(ct_res)
+log_roc %>% 
+  mutate(FPR = 1 - specificity,
+         TPR = sensitivity) %>% 
+  ggplot(aes(x = FPR, y = TPR)) +
+  geom_line() + 
+  geom_abline(aes(intercept = 0, slope = 1)) +
+  geom_vline(aes(xintercept = log_roc %>% 
+                   filter(.threshold > .73) %>%
+                   filter(.threshold == min(.threshold)) %>% 
+                   select(specificity) %>% 
+                   mutate(specificity = 1 - specificity) %>% 
+                   as.numeric()),
+             color = "tomato",
+             linetype = "dashed") +
+  geom_hline(aes(yintercept = log_roc %>% 
+                   filter(.threshold > .73) %>%
+                   filter(.threshold == min(.threshold)) %>% 
+                   select(sensitivity) %>% 
+                   as.numeric()),
+             color = "tomato",
+             linetype = "dashed") +
+  labs(title = "Curva ROC") +
+  theme_bw() +
+  theme(aspect.ratio = 1)
 ```
 
 ## Random Forest
@@ -584,215 +557,62 @@ rf_wflw_mtry2 <- workflow() %>%
   add_model(rf_mod %>% set_args(mtry = 2)) %>%
   add_recipe(df_rec)
 
-rf_wflw_mtry12 <- workflow() %>%
-  add_model(rf_mod %>% set_args(mtry = 12)) %>%
-  add_recipe(df_rec)
-
-rf_wflw_mtry74 <- workflow() %>%
-  add_model(rf_mod %>% set_args(mtry = 74)) %>%
-  add_recipe(df_rec)
-
-rf_wflw_mtry147 <- workflow() %>%
-  add_model(rf_mod %>% set_args(mtry = 147)) %>%
-  add_recipe(df_rec)
+# rf_wflw_mtry12 <- workflow() %>%
+#   add_model(rf_mod %>% set_args(mtry = 12)) %>%
+#   add_recipe(df_rec)
+# 
+# rf_wflw_mtry74 <- workflow() %>%
+#   add_model(rf_mod %>% set_args(mtry = 74)) %>%
+#   add_recipe(df_rec)
+# 
+# rf_wflw_mtry147 <- workflow() %>%
+#   add_model(rf_mod %>% set_args(mtry = 147)) %>%
+#   add_recipe(df_rec)
 ```
 
 ### Fit dei modelli
 
-```{r}
-set.seed(123) # make sure to run this before each fit so that you have the same 1000 trees
+```{r, eval=FALSE}
+set.seed(123) 
 data_fit_mtry2 <- fit(rf_wflw_mtry2, data = data_train)
 
-# Fit models for 12, 74, 147
-set.seed(123) 
-rf_fit_mtry12 <- fit(rf_wflw_mtry12, data = data_train)
-
-set.seed(123)
-rf_fit_mtry74 <- fit(rf_wflw_mtry74, data = data_train)
-
-set.seed(123) 
-rf_fit_mtry147 <- fit(rf_wflw_mtry147, data = data_train)
+# set.seed(123) 
+# rf_fit_mtry12 <- fit(rf_wflw_mtry12, data = data_train)
+# 
+# set.seed(123)
+# rf_fit_mtry74 <- fit(rf_wflw_mtry74, data = data_train)
+# 
+# set.seed(123) 
+# rf_fit_mtry147 <- fit(rf_wflw_mtry147, data = data_train)
 ```
 
+### Valutazione del modello
 
-```{r}
-collect_metrics(rf_fit_mtry2)
-```
+```{r, eval=FALSE}
+rf_fit_mtry2 = readRDS("var/rf_fit_mtry2.RData") # importo il modello nel'enviroment
 
-
-# Seconda versione del dataset
-
-```{r}
-df2 = df %>% 
-  mutate_at(vars(c(customer_age, income, email_is_free, proposed_credit_limit,
-                   phone_home_valid, phone_mobile_valid, device_distinct_emails_8w,
-                   foreign_request, has_other_cards, keep_alive_session, month)),
-            ~ as.numeric(.)) 
-df2
-```
-
-
-## Modelli
-
-### Divisione dei dati
-
-```{r}
-data_split2 = initial_split(df2, prop = 3/4, strata = "fraud")
-
-data_train2 = training(data_split2)
-data_test2 = testing(data_split2)
-```
-
-
-### Preprocessamento
-```{r}
-df_rec2_rose = 
-  recipe(fraud ~ ., data = data_train2) %>% 
-  # step_novel(all_nominal_predictors()) %>% 
-  # step_normalize(all_numeric_predictors()) %>% 
-  # step_dummy(all_nominal_predictors()) %>% 
-  step_rose(fraud) %>% 
-  step_zv(all_nominal_predictors())  
-```
-
-### Albero di classificazione
-
-```{r}
-ct_mod = decision_tree() %>%
-  set_engine(engine = 'rpart') %>%
-  set_args(cost_complexity = 0.01,  #default is 0.01 (used for pruning a tree)
-           min_n = 100, #min number of observations to try split: default is 20 [I think the documentation has a typo and says 2]  (used to stop early)
-           tree_depth = 30) %>% #max depth, number of branches/splits to get to any final group: default is 30 (used to stop early)
-  set_mode('classification') # change this for regression tree
-```
-
-#### Workflow
-
-```{r}
-ct_wflw = 
-  workflow() %>% 
-  add_model(ct_mod) %>% 
-  add_recipe(df_rec2_rose)
-ct_wflw
-```
-
-#### Bake and juice
-
-```{r}
-df_pre = df_rec2_rose %>% 
-  prep(new_data = NULL) %>% 
-  juice()
-df_pre
-```
-
-#### Performance modello
-
-```{r}
-ct_fit = fit(ct_wflw, data_train2)
-
-ct_fit %>% 
-  extract_fit_engine() %>% 
-  rpart.plot::rpart.plot()
-```
-
-```{r}
-ct_fit %>% 
-  extract_fit_engine() %>% 
-  # pluck('variable.importance') %>% 
-  vip::vip()
-```
-
-#### Tune
-
-```{r}
-data_fold = vfold_cv(data_train2, v = 10)
-
-ct_spec_tune = decision_tree() %>% 
-  set_engine(engine = "rpart") %>% 
-  set_args(cost_complexity = tune(),
-           min_n = 20,
-           tree_depth = NULL) %>% 
-  set_mode("classification")
-
-ct_tune_wflw = workflow() %>% 
-  add_model(ct_spec_tune) %>% 
-  add_recipe(df_rec2_rose)  
-
-param_grid = grid_regular(cost_complexity(range = c(-5,1)), levels = 10)  
-
-tune_res = tune_grid(
-  ct_tune_wflw,
-  resamples = data_fold,
-  grid = param_grid,
-  metrics = metric_set(accuracy)
-)
-```
-
-### Random forest
-
-```{r}
-# Model Specification
-rf_spec <- rand_forest() %>%
-  set_engine(engine = 'ranger') %>% 
-  set_args(mtry = NULL, # size of random subset of variables; default is floor(sqrt(number of total predictors))
-           trees = 500, # Number of trees
-           min_n = 50,
-           probability = FALSE, # FALSE: get hard predictions (not needed for regression)
-           importance = 'impurity') %>% # we'll come back to this at the end
-  set_mode('classification') # change this for regression
-
-# Recipe
-data_rec <- recipe(class ~ ., data = land)
-
-# Workflows
-data_wf_mtry2 <- workflow() %>%
-  add_model(rf_spec %>% set_args(mtry = 2)) %>%
-  add_recipe(df_rec2_rose)
-```
-
-```{r}
-# Fit Models
-set.seed(123) # make sure to run this before each fit so that you have the same 1000 trees
-rf_fit_mtry2 <- fit(data_wf_mtry2, data = data_train)
-```
-
-
-```{r}
 rf_out_mtry2 = rf_fit_mtry2 %>% 
   extract_fit_engine()
-
-rf_out_mtry2 %>% 
-  vip::vip()
-```
-
-```{r}
-rf_out_mtry2 %>% vip::vi()
-```
-
-```{r}
 
 rf_pred_mtry2 = predict(rf_fit_mtry2,
                     new_data = data_test,
                     type = 'class')
-
-data_test %>%
-  select(fraud) %>% 
-  bind_cols(rf_pred_mtry2) %>% 
-  conf_mat(truth = fraud, estimate = .pred_class)
+rm(rf_fit_mtry2) # elimino il modello per liberare spazio
 ```
-```{r}
-a = data_test %>%
-  select(fraud) %>% 
-  transmute_all( ~relevel(as.factor(.),"Fraud")) %>% 
-  # bind_cols(rf_pred_mtry2)
-  bind_cols(logistic_output %>%
-              select(.pred_class) %>% 
-              mutate_all(as.factor) %>% 
-              relevel())
-a$fraud = relevel(a$fraud, "Fraud")
-a$.pred_class = relevel(a$.pred_class, "Fraud")
 
-caret::confusionMatrix(a$fraud,a$.pred_class)
+
+```{r}
+rf_out_mtry2 %>% 
+  vip::vip()
+```
+#### Matrice di confusione
+
+```{r}
+data_test %>% 
+  select(fraud) %>% 
+  add_column(rf_pred_mtry2) %>% 
+  table() %>% 
+  caret::confusionMatrix(positive = "Fraud")
 ```
 
 ```{r}
