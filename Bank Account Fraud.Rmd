@@ -367,7 +367,9 @@ log_fit = fit(log_wflw, data_train)
 ```
 
 
-```{r}
+```{r, echo=FALSE}
+log_fit = readRDS("var/log_fit")
+
 lev.p.value = c("very low confidence", "low confidence", "confidence", "high confidence", "very high confidence")
 log_coef = log_fit %>% 
   tidy() %>%
@@ -382,10 +384,8 @@ log_coef = log_fit %>%
   mutate(p.value.level = factor(p.value.level, levels = lev.p.value, ordered = T))
 ```
 
-```{r,echo=FALSE}
-log_fit = readRDS("var/log_fit")
-rm(log_fit)
-gc()
+
+```{r}
 log_coef
 ```
 
@@ -457,6 +457,8 @@ logistic_output <- data_test %>%
   bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) %>%
   mutate(.pred_class = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = .5))
 
+rm(log_fit)
+gc()
 ```
 
 
@@ -598,6 +600,7 @@ rf_pred_mtry2 = predict(rf_fit_mtry2,
                     new_data = data_test,
                     type = 'class')
 rm(rf_fit_mtry2) # elimino il modello per liberare spazio
+gc()
 ```
 
 
@@ -614,15 +617,6 @@ data_test %>%
   table() %>% 
   caret::confusionMatrix(positive = "Fraud")
 ```
-
-```{r}
-parallel::detectCores()
-```
-```{r}
-rf_fit_mtry2 %>%
-  extract_fit_engine()
-```
-
 
 # Dataframe ridotto
 
@@ -753,10 +747,10 @@ log_wflw =
 ### Performance modello
 
 ```{r}
-log_fit = fit(log_wflw, data_train)
+log_fit_rid = fit(log_wflw, data_train)
 
 lev.p.value = c("very low confidence", "low confidence", "confidence", "high confidence", "very high confidence")
-log_coef = log_fit %>% 
+log_coef_rid = log_fit_rid %>% 
   tidy() %>%
   mutate(OR = exp(estimate),
          OR.conf.low = exp(estimate - 1.96*std.error),
@@ -767,7 +761,7 @@ log_coef = log_fit %>%
                                    p.value > .001 ~ lev.p.value[4],
                                    .default = lev.p.value[5])) %>% 
   mutate(p.value.level = factor(p.value.level, levels = lev.p.value, ordered = T))
-log_coef
+log_coef_rid
 ```
 
 
@@ -799,8 +793,8 @@ creaGruppoVariabili = function(data, varOrig, colVar)
   return(macroGruppi)
 }
 
-grafico = log_coef %>%
-  mutate(Variabili = creaGruppoVariabili(log_coef, names(dfRid), "term")) %>% 
+grafico = log_coef_rid %>%
+  mutate(Variabili = creaGruppoVariabili(log_coef_rid, names(dfRid), "term")) %>% 
   ggplot(aes(x = Variabili, y = OR, ymin = OR.conf.low,
              ymax = OR.conf.high, color = p.value.level, label = term)) +
   geom_pointrange(position = "jitter") +
@@ -814,7 +808,7 @@ grafico = log_coef %>%
   #                       na.value = "gray") +
   xlab("Coefficienti") +
   geom_hline(aes(yintercept = 1), color = "tomato") +
-  ylim(c(min(log_coef$OR.conf.low),2*median(log_coef$OR.conf.high, na.rm = T))) +
+  ylim(c(min(log_coef_rid$OR.conf.low),2*median(log_coef_rid$OR.conf.high, na.rm = T))) +
   theme(legend.position = "top", 
         legend.box = "horizontal",
         legend.title = element_text(size = 9),
@@ -828,70 +822,103 @@ ggplotly(grafico)
 
 ### Valutazione del modello
 
+Dalle probabilità creo la predizione della classe in base al threshold impostato, per ora pongo 0.5. successivamente lo andrò ad adattare per trovare la soluzione migliore al problema.
+
 ```{r}
-# Soft predictions
-logistic_output <-  data_test %>%
-  bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) 
+log_output_rid <- data_test %>%
+  bind_cols(predict(log_fit_rid, new_data = data_test, type = 'prob')) %>%
+  mutate(.pred_class = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = .5))
 
-# Hard predictions (you pick threshold)
-logistic_output <- data_test %>%
-  bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) %>%
-  mutate(.pred_class = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = .45)) #Try changing threshold (.5, 0, 1, .2, .8)
+```
 
-# Visualize Soft Predictions
-logistic_output %>%
+
+
+```{r}
+log_output_rid %>%
   ggplot(aes(x = fraud, y = `.pred_No fraud`)) +
-  geom_boxplot() + 
-  geom_hline(yintercept = 0.45, color='red') +  # try changing threshold
-  labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
-  theme_classic()
-
-
-# Visualize Soft Predictions
-logistic_output %>%
-  ggplot(aes(x = fraud, y = `.pred_No fraud`)) +
-  geom_violin(fill = "blue4") + 
-  geom_hline(yintercept = 0.5, color='red') +  # try changing threshold
-  geom_hline(yintercept = 0.97, color='red') +  # try changing threshold
+  geom_violin(fill = "mediumspringgreen", alpha = .6) + 
+  geom_hline(yintercept = 0.5, color='mediumvioletred') +  # try changing threshold
+  geom_hline(yintercept = 0.6, color='mediumvioletred') +  # try changing threshold
   labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
   scale_y_percent() +
   theme_classic()
 ```
 
+Osservo le metriche delle predizioni del modello con il threshold impostato al 0.5.
+Le metriche scelte in questo caso sono la sensitività, specificità, accuratezza e precione. 
+
+
 ```{r}
-# Confusion Matrix
-logistic_output %>%
-  conf_mat(truth = fraud, estimate = .pred_class)
-
-log_metrics <- metric_set(sens, yardstick::spec, accuracy,yardstick::precision) # these metrics are based on hard predictions
-
-#sens: sensitivity = chance of correctly predicting second level, given second level (Yes)
-#spec: specificity = chance of correctly predicting first level, given first level (No)
-#accuracy: accuracy = chance of correctly predicting outcome
+log_metrics = metric_set(sens, yardstick::spec, accuracy,yardstick::precision) 
 
 logistic_output %>% 
-  log_metrics(estimate = .pred_class, truth = fraud, event_level = "second",) 
+  log_metrics(estimate = .pred_class, truth = fraud, event_level = "second") 
 ```
 
-```{r}
-logistic_roc <- logistic_output %>% 
-    roc_curve(fraud, .pred_Fraud, event_level = "second") # set second level of outcome as "success"
+#### Matrice di confusione
 
-autoplot(logistic_roc) + 
-  theme_classic()
+<!-- Attraverso la curva ROC vado a cercare la migliore soluzione tra FPR e TPR (recall) in modo tale da trovare il threshold che massimizza la specificità con la sensitività al più del 95%. -->
+
+Il threshold per trovare un recall del 5% è stato impostato a 0,73.
+
+```{r}
+log_roc = logistic_output %>% 
+    roc_curve(fraud, .pred_Fraud, event_level = "second")  # con second dico che la seconda classe (fraud) è la classe che è interesse di studio
+  
+
+# log_bestThreshold = log_roc %>% 
+#   filter(sensitivity > 0.5) %>% 
+#   filter(specificity == max(specificity))
+
+logistic_output %>%
+  # mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = log_bestThreshold$.threshold)) %>% 
+  mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = 0.75)) %>% 
+  select(fraud,pred_best) %>% 
+  table() %>% 
+  caret::confusionMatrix(positive = "Fraud")
+```
+
+
+#### Curva ROC
+
+```{r}
+log_roc %>% 
+  mutate(FPR = 1 - specificity,
+         TPR = sensitivity) %>% 
+  ggplot(aes(x = FPR, y = TPR)) +
+  geom_line() + 
+  geom_abline(aes(intercept = 0, slope = 1)) +
+  geom_vline(aes(xintercept = log_roc %>% 
+                   filter(.threshold > .73) %>%
+                   filter(.threshold == min(.threshold)) %>% 
+                   select(specificity) %>% 
+                   mutate(specificity = 1 - specificity) %>% 
+                   as.numeric()),
+             color = "tomato",
+             linetype = "dashed") +
+  geom_hline(aes(yintercept = log_roc %>% 
+                   filter(.threshold > .73) %>%
+                   filter(.threshold == min(.threshold)) %>% 
+                   select(sensitivity) %>% 
+                   as.numeric()),
+             color = "tomato",
+             linetype = "dashed") +
+  labs(title = "Curva ROC") +
+  theme_bw() +
+  theme(aspect.ratio = 1)
 ```
 
 ### Ricampionamento
 
 ```{r}
 set.seed(1)
-cv_folds = vfold_cv(data_train, strata = "fraud",repeats = 4)
+cv_folds = vfold_cv(data_train, strata = "fraud",repeats = 10)
 
 cv_folds
 ```
 
 
-```{r}
+```{r, eval=FALSE}
 log_metrics = metric_set(sens, yardstick::spec, accuracy)
 
 set.seed(1)
@@ -901,6 +928,8 @@ log_res = fit_resamples(
   resamples = cv_folds,
   metrics = log_metrics
 )
+
+saveRDS(log_res = "var/log_res.RData")
 
 collect_metrics(log_res)
 ```
