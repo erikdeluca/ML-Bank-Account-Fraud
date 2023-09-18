@@ -1002,19 +1002,26 @@ rf_pred_mtry12 = predict(rf_fit_mtry12,
 
 
 ```{r}
-rf_out_mtry2 %>% 
-  vip::vip()
+rf_varImportance = rf_out_mtry2 %>% 
+  vip::vi() %>% 
+  right_join(rf_out_mtry5 %>% vip::vi(), by = "Variable") %>% 
+  right_join(rf_out_mtry5 %>% vip::vi(), by = "Variable") 
+  
+colnames(rf_varImportance) = c("Variable", "mtry2", "mtry5", "mtry12")
+
+rf_varImportance %>% 
+  # mutate(Macrovariabili = creaGruppoVariabili(rf_varImportance, names(dfRid), "Variable")) %>% 
+  head(25) %>% 
+  pivot_longer(cols = 2:4,
+               names_to = "mtry",
+               values_to = "Importance") %>% 
+  mutate(Variable = as.factor(Variable)) %>% 
+  ggplot(aes(x = Variable, y = Importance)) +
+  geom_col(aes(fill = mtry), position = "dodge") + 
+  coord_flip()
 ```
 
-```{r}
-rf_out_mtry5 %>% 
-  vip::vip()
-```
 
-```{r}
-rf_out_mtry12 %>% 
-  vip::vip()
-```
 
 
 
