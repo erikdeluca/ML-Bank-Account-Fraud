@@ -36,6 +36,7 @@ library(klaR)
 library(themis)
 library(tidymodels)
 library(plotly)
+library(DescTools)
 tidymodels_prefer()
 conflicted::conflict_prefer("select", "dplyr")
 ```
@@ -537,86 +538,6 @@ log_roc %>%
   theme(aspect.ratio = 1)
 ```
 
-## Random Forest
-
-### Specificazione modello
-
-```{r}
-rf_mod <- rand_forest() %>%
-  set_engine(engine = 'ranger') %>% 
-  set_args(mtry = NULL, # size of random subset of variables; default is floor(sqrt(number of total predictors))
-           trees = 1000, # Number of trees
-           min_n = 2,
-           probability = FALSE, # FALSE: get hard predictions (not needed for regression)
-           importance = 'impurity') %>% # we'll come back to this at the end
-  set_mode('classification') # change this for regression
-```
-
-### Workflows
-
-```{r}
-rf_wflw_mtry2 <- workflow() %>%
-  add_model(rf_mod %>% set_args(mtry = 2)) %>%
-  add_recipe(df_rec)
-
-# rf_wflw_mtry12 <- workflow() %>%
-#   add_model(rf_mod %>% set_args(mtry = 12)) %>%
-#   add_recipe(df_rec)
-# 
-# rf_wflw_mtry74 <- workflow() %>%
-#   add_model(rf_mod %>% set_args(mtry = 74)) %>%
-#   add_recipe(df_rec)
-# 
-# rf_wflw_mtry147 <- workflow() %>%
-#   add_model(rf_mod %>% set_args(mtry = 147)) %>%
-#   add_recipe(df_rec)
-```
-
-### Fit dei modelli
-
-```{r, eval=FALSE}
-set.seed(123) 
-data_fit_mtry2 <- fit(rf_wflw_mtry2, data = data_train)
-
-# set.seed(123) 
-# rf_fit_mtry12 <- fit(rf_wflw_mtry12, data = data_train)
-# 
-# set.seed(123)
-# rf_fit_mtry74 <- fit(rf_wflw_mtry74, data = data_train)
-# 
-# set.seed(123) 
-# rf_fit_mtry147 <- fit(rf_wflw_mtry147, data = data_train)
-```
-
-### Valutazione del modello
-
-```{r, eval=FALSE}
-rf_fit_mtry2 = readRDS("var/rf_fit_mtry2.RData") # importo il modello nel'enviroment
-
-rf_out_mtry2 = rf_fit_mtry2 %>% 
-  extract_fit_engine()
-
-rf_pred_mtry2 = predict(rf_fit_mtry2,
-                    new_data = data_test,
-                    type = 'class')
-rm(rf_fit_mtry2) # elimino il modello per liberare spazio
-gc()
-```
-
-
-```{r}
-rf_out_mtry2 %>% 
-  vip::vip()
-```
-#### Matrice di confusione
-
-```{r}
-data_test %>% 
-  select(fraud) %>% 
-  add_column(rf_pred_mtry2) %>% 
-  table() %>% 
-  caret::confusionMatrix(positive = "Fraud")
-```
 
 # Dataframe ridotto
 
@@ -872,7 +793,7 @@ log_roc = logistic_output %>%
 
 logistic_output %>%
   # mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = log_bestThreshold$.threshold)) %>% 
-  mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = 0.75)) %>% 
+  mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = 0.6)) %>% 
   select(fraud,pred_best) %>% 
   table() %>% 
   caret::confusionMatrix(positive = "Fraud")
@@ -919,6 +840,8 @@ cv_folds
 
 
 ```{r, eval=FALSE}
+log_res = readRDS("var/log_res.RData")
+
 log_metrics = metric_set(sens, yardstick::spec, accuracy)
 
 set.seed(1)
@@ -930,6 +853,178 @@ log_res = fit_resamples(
 )
 
 saveRDS(log_res = "var/log_res.RData")
+```
 
-collect_metrics(log_res)
+
+```{r}
+log_res_metrics = lapply(1:nrow(log_res), function(i) {
+  log_res %>%
+    select(.metrics) %>%
+    dplyr::slice(i) %>%
+    unlist() %>%
+    t() %>%
+    data.frame() %>%
+    select_if(str_detect(names(.), ".metrics..estimate"))
+}) %>% 
+  purrr::map_dfr( ~ as.data.frame(.)) %>% 
+  transmute(sensitivity = .metrics..estimate1,
+         specificity = .metrics..estimate2,
+         accuracy = .metrics..estimate3)
+
+log_res_metrics
+
+log_res_metrics %>% 
+  mutate_all(as.numeric) %>% 
+  # add_row(sensitivity = 0,specificity = 0,accuracy = 0, .before = 1) %>% 
+  # add_row(sensitivity = 1,specificity = 1,accuracy = 1, .after =  100) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_point(aes(color = accuracy)) +
+  scale_color_gradient2(high = "springgreen",
+                        low = "tomato",
+                        mid = "orange",
+                        midpoint = mean(as.numeric(log_res_metrics$accuracy)),
+                        na.value = "gray") +
+  geom_vline(aes(xintercept = log_res_metrics %>%
+                   mutate_all(as.numeric) %>%
+                   filter(specificity > .95) %>%
+                   filter(sensitivity == max(sensitivity)) %>% 
+                   select(specificity) %>% 
+                   mutate(specificity = 1 - specificity) %>% 
+                   as.numeric()),
+             color = "tomato",
+             linetype = "dashed") +
+  geom_hline(aes(yintercept = log_res_metrics %>% 
+                   mutate_all(as.numeric) %>%
+                   filter(specificity > .95) %>%
+                   filter(sensitivity == max(sensitivity)) %>% 
+                   select(sensitivity) %>% 
+                   as.numeric()),
+             color = "tomato",
+             linetype = "dashed") +
+  theme_bw() 
+
+
+
+# log_res %>%
+#     select(.metrics) %>% 
+#     dplyr::slice(1) %>% 
+#     unlist() %>%
+#     t() %>% 
+#     data.frame() %>% 
+#     select_if(str_detect(names(.), ".metrics..estimate"))
+
+```
+
+
+
+```{r}
+log_res %>% 
+  select_best("accuracy")
+```
+
+## Random Forest
+
+
+### Specificazione modello
+
+```{r}
+rf_mod = rand_forest() %>%
+  set_engine(engine = 'ranger') %>% 
+  set_args(mtry = NULL, # lo vado a inserire dopo 
+           trees = 1000,
+           min_n = 2,
+           probability = TRUE, 
+           importance = 'impurity') %>% 
+  set_mode('classification') 
+```
+
+### Workflows
+
+```{r}
+rf_wflw_mtry2 = workflow() %>%
+  add_model(rf_mod %>% set_args(mtry = 2)) %>%
+  add_recipe(df_rec)
+
+rf_wflw_mtry5 = workflow() %>%
+  add_model(rf_mod %>% set_args(mtry = floor(sqrt(ncol(dfRid))))) %>% # 5
+  add_recipe(df_rec)
+
+rf_wflw_mtry12 = workflow() %>%
+  add_model(rf_mod %>% set_args(mtry = 12)) %>%
+  add_recipe(df_rec)
+```
+
+### Fit dei modelli
+
+```{r, eval=FALSE}
+set.seed(1) 
+rf_fit_mtry2 = fit(rf_wflw_mtry2, data = data_train)
+
+set.seed(1)
+rf_fit_mtry12 <- fit(rf_wflw_mtry12, data = data_train)
+
+set.seed(1)
+rf_fit_mtry5 <- fit(rf_wflw_mtry5, data = data_train)
+
+saveRDS(rf_fit_mtry2, "var/rf_fit_mtry2.RData")
+saveRDS(rf_fit_mtry5, "var/rf_fit_mtry5.RData")
+saveRDS(rf_fit_mtry12, "var/rf_fit_mtry12.RData")
+```
+
+### Valutazione del modello
+
+```{r, eval=FALSE}
+# rf_fit_mtry2 = readRDS("var/rf_fit_mtry2.RData") # importo il modello nel'enviroment
+
+rf_out_mtry2 = rf_fit_mtry2 %>% 
+  extract_fit_engine()
+
+rf_pred_mtry2 = predict(rf_fit_mtry2,
+                    new_data = data_test,
+                    type = 'prob')
+
+rf_out_mtry5 = rf_fit_mtry5 %>% 
+  extract_fit_engine()
+
+rf_pred_mtry5 = predict(rf_fit_mtry5,
+                    new_data = data_test,
+                    type = '')
+
+rf_out_mtry12 = rf_fit_mtry12 %>% 
+  extract_fit_engine()
+
+rf_pred_mtry12 = predict(rf_fit_mtry12,
+                    new_data = data_test,
+                    type = 'class')
+# rm(rf_fit_mtry2) # elimino il modello per liberare spazio
+# gc()
+```
+
+
+```{r}
+rf_out_mtry2 %>% 
+  vip::vip()
+```
+
+```{r}
+rf_out_mtry5 %>% 
+  vip::vip()
+```
+
+```{r}
+rf_out_mtry12 %>% 
+  vip::vip()
+```
+
+
+
+
+#### Matrice di confusione
+
+```{r}
+data_test %>% 
+  select(fraud) %>% 
+  add_column(rf_pred_mtry2) %>% 
+  table() %>% 
+  caret::confusionMatrix(positive = "Fraud")
 ```
