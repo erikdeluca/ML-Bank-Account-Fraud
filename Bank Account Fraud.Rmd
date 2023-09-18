@@ -1005,7 +1005,7 @@ rf_pred_mtry12 = predict(rf_fit_mtry12,
 rf_varImportance = rf_out_mtry2 %>% 
   vip::vi() %>% 
   right_join(rf_out_mtry5 %>% vip::vi(), by = "Variable") %>% 
-  right_join(rf_out_mtry5 %>% vip::vi(), by = "Variable") 
+  right_join(rf_out_mtry12 %>% vip::vi(), by = "Variable") 
   
 colnames(rf_varImportance) = c("Variable", "mtry2", "mtry5", "mtry12")
 
@@ -1015,9 +1015,15 @@ rf_varImportance %>%
   pivot_longer(cols = 2:4,
                names_to = "mtry",
                values_to = "Importance") %>% 
-  mutate(Variable = as.factor(Variable)) %>% 
+  mutate(Variable = Variable %>% 
+           factor() %>% 
+           reorder(Importance)) %>% 
+  # mutate(mtry = mtry %>% 
+  #          factor() %>% 
+  #          reorder(c("mtry2", "mtry5", "mtry12"))) %>% 
   ggplot(aes(x = Variable, y = Importance)) +
-  geom_col(aes(fill = mtry), position = "dodge") + 
+  geom_col(aes(fill = mtry), position = position_dodge2(reverse = T)) + 
+  scale_fill_brewer(palette = "Dark2") +
   coord_flip()
 ```
 
