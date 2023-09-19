@@ -988,18 +988,55 @@ rf_out_mtry5 = rf_fit_mtry5 %>%
 
 rf_pred_mtry5 = predict(rf_fit_mtry5,
                     new_data = data_test,
-                    type = '')
+                    type = 'prob')
 
 rf_out_mtry12 = rf_fit_mtry12 %>% 
   extract_fit_engine()
 
 rf_pred_mtry12 = predict(rf_fit_mtry12,
                     new_data = data_test,
-                    type = 'class')
+                    type = 'prob')
 # rm(rf_fit_mtry2) # elimino il modello per liberare spazio
 # gc()
 ```
 
+
+```{r, warning=FALSE}
+data_test %>% 
+  select(fraud) %>% 
+  add_column(rf_pred_mtry2, .name_repair = "unique") %>%
+  add_column(rf_pred_mtry5, .name_repair = "unique") %>%
+  add_column(rf_pred_mtry12, .name_repair = "unique") %>%
+  pivot_longer(cols = c(2,4,6), values_to = "value", names_to = "mtry") %>% 
+  mutate(mtry = factor(mtry, labels = c("mtry2", "mtry5", "mtry12"))) %>% 
+  ggplot(aes(x = fraud, y = value)) +
+  geom_violin(fill = "mediumspringgreen", alpha = .6) + 
+  geom_hline(yintercept = 0.5, color='mediumvioletred') +  # try changing threshold
+  geom_hline(yintercept = 0.85, color='mediumvioletred') +  # try changing threshold
+  facet_grid(cols = dplyr::vars(mtry)) +
+  labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
+  scale_y_percent() +
+  theme_classic()
+
+```
+#### Matrice di confusione
+
+```{r}
+
+data_test %>% 
+  select(fraud) %>% 
+  add_column(rf_pred_mtry12 %>% 
+               transmute(predicted = factor(`.pred_No fraud`<.85,
+                                            labels = c("No fraud", "Fraud")))) %>% 
+  table() %>% 
+  caret::confusionMatrix(positive = "Fraud")
+```
+
+### Selezione variabili 
+
+Nel grafico si può vedere come mtry12 e mtry5 hanno valori sull'importanza delle variabili decisamente superiori di mtry2, inoltre le prime variabili hanno una classifica simile tra mtry12 e mtry5, per mtry2, invece, le variabili più importanti sarebbero altre. 
+
+procediamo quindi ha eseguire una selezione delle variabili per snellire il dataset. Verrannno selezionate solo alcune modalità di variabili categoriche, avendo già il dataset diviso in dummies non ci saranno problemi nella creazione di nuove categorie.
 
 ```{r}
 rf_varImportance = rf_out_mtry2 %>% 
@@ -1014,7 +1051,9 @@ rf_varImportance %>%
   head(25) %>% 
   pivot_longer(cols = 2:4,
                names_to = "mtry",
-               values_to = "Importance") %>% 
+               values_to = "Importance") %>%
+  mutate(mtry = mtry %>% 
+           factor(levels = c("mtry2", "mtry5", "mtry12"), ordered = T)) %>% 
   mutate(Variable = Variable %>% 
            factor() %>% 
            reorder(Importance)) %>% 
@@ -1022,22 +1061,65 @@ rf_varImportance %>%
   #          factor() %>% 
   #          reorder(c("mtry2", "mtry5", "mtry12"))) %>% 
   ggplot(aes(x = Variable, y = Importance)) +
-  geom_col(aes(fill = mtry), position = position_dodge2(reverse = T)) + 
+  geom_col(aes(fill = mtry), position = "dodge") + 
   scale_fill_brewer(palette = "Dark2") +
   coord_flip()
 ```
 
-
-
-
-
-
-#### Matrice di confusione
+Seleziono le 25 variabili più importanti per il modello random forest con il parametro mtry12.
 
 ```{r}
-data_test %>% 
-  select(fraud) %>% 
-  add_column(rf_pred_mtry2) %>% 
-  table() %>% 
-  caret::confusionMatrix(positive = "Fraud")
+var_Importance = rf_varImportance %>% 
+  dplyr::arrange(across(mtry12)) %>% 
+  tail(25) %>% 
+  select(Variable)
+
+df_rec_25var = df_rec %>% 
+  step_select(var_Importance$Variable) %>% 
+  step_nzv(all_factor_predictors()) %>%
+  step_corr(all_predictors())  
+
+df_rec_25var %>% 
+  prep(training = data_train)  
 ```
+
+
+## Albero di decisione
+
+### Tuning
+
+```{r}
+tree_mod = 
+  decision_tree(
+    cost_complexity = tune(),
+    tree_depth = tune()
+  ) %>% 
+  set_engine("rpart") %>% 
+  set_mode("classification")
+
+
+tree_grid = grid_regular(cost_complexity(),
+                          tree_depth(),
+                          levels = 5)
+
+
+tree_wflw = workflow() %>%
+  add_model(tree_mod) %>%
+  add_recipe(df_rec_25var)
+
+set.seed(1)
+data_folds = vfold_cv(data_train)
+
+tree_wflw
+```
+
+
+```{r}
+tree_res = 
+  tree_wflw %>% 
+  tune_grid(
+    resamples = data_folds,
+    grid = tree_grid
+    )
+```
+
