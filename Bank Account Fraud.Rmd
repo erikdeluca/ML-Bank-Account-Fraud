@@ -1096,8 +1096,90 @@ data_test_25var = df_rec_25var %>%
 Svolgo il lavoro su differenti core della CPU.
 
 ```{r}
-cores = parallel::detectCores()
+cores = parallel::detectCores() - 1
 cores
+```
+
+```{r}
+rf_mod_tun =
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_engine("ranger", num.threads = cores) %>% 
+  set_args(probability = TRUE, 
+           importance = 'impurity') %>% 
+  set_mode("classification")
+
+rf_workflow =
+  workflow() %>% 
+  add_model(rf_mod_tun) %>% 
+  add_recipe(df_rec_25var)
+
+rf_workflow
+```
+
+```{r, eval=FALSE}
+set.seed(1)
+rf_res =
+  rf_workflow %>% 
+  tune_grid(data_folds,
+            grid = 25,
+            control = control_grid(save_pred = TRUE,
+                                   event_level = "second"),
+            metrics = metric_set(roc_auc, 
+                                 yardstick::specificity,
+                                 yardstick::sensitivity))
+saveRDS(rf_res, "var/rf_res.RData")
+```
+Alleno 250 modelli totali utilizzando la cross validation (k-fold) con il train set   diviso in 10 parti uguali. Per ogni modello k-1 gruppi del train set verranno utilizzati per allenare il modello, mentre il restante sarà usato per testare il modello.
+
+
+```{r}
+rf_res = readRDS("var/rf_res.RData")
+metriche = rf_res %>% 
+  select(.metrics) %>% 
+  map_dfr(as.data.frame) %>% 
+  select(mtry, min_n, .metric, .estimate, .config) 
+
+metriche_pivot = metriche %>% 
+  pivot_wider(names_from = .metric, values_from = .estimate, id_cols = .config) %>% 
+  left_join(metriche %>% 
+              filter(.metric == "specificity") %>% 
+              select(mtry, min_n, .config),
+            by = ".config")
+
+metriche_pivot
+```
+
+
+
+```{r}
+autoplot(rf_res) +
+  geom_vline(aes(xintercept = 5), color = "tomato") +
+  theme_bw()
+```
+
+
+```{r}
+rf_best = metriche_pivot %>% 
+  filter(specificity > .95) %>% 
+  filter(sensitivity == max(sensitivity))
+
+rf_best
+```
+
+
+```{r}
+rf_auc =
+  rf_res %>% 
+  collect_predictions(parameters = rf_best) %>% 
+  roc_curve(fraud, .pred_Fraud, event_level = "second") %>% 
+  mutate(model = "Random Forest")
+
+bind_rows(rf_auc, lr_auc) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(lwd = 1.5, alpha = 0.8) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  scale_color_viridis_d(option = "plasma", end = .6)
 ```
 
 
@@ -1149,7 +1231,7 @@ tree_res %>%
   collect_metrics() %>%
   mutate(tree_depth = factor(tree_depth)) %>%
   ggplot(aes(cost_complexity, mean, color = tree_depth)) +
-  geom_line(size = 1.5, alpha = 0.6) +
+  geom_line(linewidth = 1.5, alpha = 0.6) +
   geom_point(size = 2) +
   facet_wrap(~ .metric, scales = "free", nrow = 2) +
   scale_x_log10(labels = scales::label_number()) +
@@ -1222,7 +1304,9 @@ tree_fit %>%
 ```{r}
 lr_mod =
   logistic_reg(penalty = tune(), mixture = 1) %>% 
-  set_engine("glmnet")
+  set_engine("glmnet") %>% 
+  set_mode("classification") %>% 
+  set_args(family = "binomial")
 
 lr_workflow =
   workflow() %>% 
@@ -1231,20 +1315,23 @@ lr_workflow =
 
 lr_reg_grid = tibble(penalty = 10^ seq(-4, -1, length.out = 30))
 
+lr_workflow
 ```
 
 
-```{r}
+```{r, eval=FALSE}
 lr_res =
   lr_workflow %>% 
-  tune_grid(data_s,
+  tune_grid(data_folds,
             grid = lr_reg_grid,
             control = control_grid(save_pred = TRUE),
             metrics = metric_set(roc_auc))
+saveRDS(lr_res, "var/lr_res.RData")
 ```
 
 
 ```{r}
+lr_res = readRDS()
   lr_res %>% 
   collect_metrics() %>% 
   ggplot(aes(x = penalty, y = mean)) + 
@@ -1282,17 +1369,18 @@ lr_best
 ```
 
 ```{r}
-  lr_res %>% 
+lr_auc =  lr_res %>% 
   collect_predictions(parameters = lr_best) %>% 
   roc_curve(fraud, .pred_Fraud, event_level = "second") %>% 
-  mutate(model = "Logistic Regression") %>% 
-  autoplot(lr_auc)
+  mutate(model = "Logistic Regression")
+
+lr_auc %>% autoplot(lr_auc)
 ```
 
 ```{r}
 lr_res %>% 
   collect_predictions(parameters = lr_best) %>% 
-  mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = 0.765)) %>% 
+  mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = 0.680)) %>% 
   select(fraud,pred_best) %>% 
   table() %>% 
   caret::confusionMatrix(positive = "Fraud")
