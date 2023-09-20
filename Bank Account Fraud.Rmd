@@ -16,7 +16,36 @@ output:
 
 # Librerie
 
-```{r, include}
+
+```{r, include=FALSE}
+library(gbm)
+library(randomForest)
+library(ROSE)
+library(dplyr)
+library(tidyverse)
+library(tree)
+library(smotefamily)
+library(ModelMetrics)
+library(ggplot2)
+library(viridis)
+library(hrbrthemes)
+library(kableExtra)
+library(knitr)
+library(tune)
+library(discrim)
+library(klaR) 
+library(themis)
+library(tidymodels)
+library(plotly)
+library(DescTools)
+tidymodels_prefer()
+conflicted::conflict_prefer("select", "dplyr")
+
+```
+
+
+
+```{r, eval=FALSE}
 library(gbm)
 library(randomForest)
 library(ROSE)
@@ -189,12 +218,13 @@ df
 ```{r, warning=FALSE}
 dfChar = df %>%
   select(where(is.factor)) 
-# apply(matrix(1:(ncol(dfChar) - 1)),1, function(indexCol)
-apply(matrix(1:2),1, function(indexCol)
+apply(matrix(1:(ncol(dfChar) - 1)),1, function(indexCol)
+# apply(matrix(1:2),1, function(indexCol)
 {
   ggplot(dfChar, aes(x = get(colnames(dfChar)[indexCol]), group = fraud)) +
   geom_bar(aes(y = ..prop.., fill =  fraud), stat = "count") +
   scale_y_continuous(labels=scales::percent) +
+  scale_fill_brewer(palette = "Dark2") +
   xlab(colnames(dfChar)[indexCol]) +
   ylab("Osservazioni") +
   theme_ipsum() +
@@ -301,7 +331,7 @@ df %>%
 
 ## Divisione dei dati
 
-```{r, eval=FALSE}
+```{r}
 data_split = initial_split(df, prop = 3/4, strata = "fraud")
 
 data_train = training(data_split)
@@ -332,7 +362,6 @@ df_rec =
   step_zv(all_nominal_predictors())
 ```
 
-### Campionamento e sottocampionamento
 
 ```{r, eval=FALSE}
 df %>% 
@@ -350,20 +379,12 @@ df %>%
 log_mod = logistic_reg() %>% 
   set_engine("glm") %>% 
   set_mode("classification")
-```
 
-### Workflow
-
-```{r,eval=FALSE}
 log_wflw = 
   workflow() %>% 
   add_model(log_mod) %>% 
   add_recipe(df_rec)
-```
 
-### Performance modello
-
-```{r,eval=FALSE}
 log_fit = fit(log_wflw, data_train)
 ```
 
@@ -383,6 +404,13 @@ log_coef = log_fit %>%
                                    p.value > .001 ~ lev.p.value[4],
                                    .default = lev.p.value[5])) %>% 
   mutate(p.value.level = factor(p.value.level, levels = lev.p.value, ordered = T))
+
+logistic_output = data_test %>%
+  bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) %>%
+  mutate(.pred_class = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = .5))
+
+rm(log_fit)
+gc()
 ```
 
 
@@ -426,7 +454,11 @@ grafico = log_coef %>%
              ymax = OR.conf.high, color = p.value, label = term)) +
   geom_pointrange(position = "jitter") +
   coord_flip() +
-  scale_x_discrete(labels = str_sub(names(df),end = 10)) +
+  scale_x_discrete(labels = log_coef %>% 
+                     creaGruppoVariabili(names(dfRid), "term") %>% 
+                     str_sub(end = 15) %>% 
+                     as.factor() %>% 
+                     levels()) +
   scale_color_gradient2(low = "mediumspringgreen",
                         mid = "mediumvioletred",
                        high = "mediumvioletred",
@@ -453,15 +485,6 @@ ggplotly(grafico)
 
 Dalle probabilità creo la predizione della classe in base al threshold impostato, per ora pongo 0.5. successivamente lo andrò ad adattare per trovare la soluzione migliore al problema.
 
-```{r, eval=FALSE}
-logistic_output <- data_test %>%
-  bind_cols(predict(log_fit, new_data = data_test, type = 'prob')) %>%
-  mutate(.pred_class = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = .5))
-
-rm(log_fit)
-gc()
-```
-
 
 
 ```{r}
@@ -485,11 +508,9 @@ log_metrics = metric_set(sens, yardstick::spec, accuracy,yardstick::precision)
 logistic_output %>% 
   log_metrics(estimate = .pred_class, truth = fraud, event_level = "second") 
 ```
+
 #### Matrice di confusione
 
-<!-- Attraverso la curva ROC vado a cercare la migliore soluzione tra FPR e TPR (recall) in modo tale da trovare il threshold che massimizza la specificità con la sensitività al più del 95%. -->
-
-Il threshold per trovare un recall del 5% è stato impostato a 0,73.
 
 ```{r}
 log_roc = logistic_output %>% 
@@ -502,7 +523,7 @@ log_roc = logistic_output %>%
 
 logistic_output %>%
   # mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = log_bestThreshold$.threshold)) %>% 
-  mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = 0.73)) %>% 
+  mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = 0.5)) %>% 
   select(fraud,pred_best) %>% 
   table() %>% 
   caret::confusionMatrix(positive = "Fraud")
@@ -576,6 +597,7 @@ dfRid %>%
   ggplot(aes(x = get(colnames(dfChar)[indexCol]), group = fraud)) +
   geom_bar(aes(y = ..prop.., fill =  fraud), stat = "count") +
   scale_y_continuous(labels=scales::percent) +
+  scale_fill_brewer(palette = "Dark2") +
   xlab(colnames(dfChar)[indexCol]) +
   ylab("Osservazioni") +
   theme_ipsum() +
@@ -587,6 +609,7 @@ dfRid %>%
 
 ## Correlazione
 
+Nei seguenti grafici si può notare come sia aumentata di molto la correlazione della variabile fraud con le altre variabili numeriche.
 
 ```{r}
 dfRid %>% 
@@ -720,7 +743,11 @@ grafico = log_coef_rid %>%
              ymax = OR.conf.high, color = p.value.level, label = term)) +
   geom_pointrange(position = "jitter") +
   coord_flip() +
-  scale_x_discrete(labels = str_sub(names(dfRid),end = 10)) +
+  scale_x_discrete(labels = log_coef_rid %>% 
+                     creaGruppoVariabili(names(dfRid), "term") %>% 
+                     str_sub(end = 15) %>% 
+                     as.factor() %>% 
+                     levels()) +
   scale_color_brewer(palette = "RdYlGn") +
   # scale_color_gradient2(low = "springgreen",
   #                       high = "tomato",
@@ -730,13 +757,11 @@ grafico = log_coef_rid %>%
   xlab("Coefficienti") +
   geom_hline(aes(yintercept = 1), color = "tomato") +
   ylim(c(min(log_coef_rid$OR.conf.low),2*median(log_coef_rid$OR.conf.high, na.rm = T))) +
-  theme(legend.position = "top", 
+  theme(legend.position = "bottom", 
         legend.box = "horizontal",
         legend.title = element_text(size = 9),
         legend.text = element_text(size = 7),
         axis.text.x = element_text(vjust = 1, size = 8)) 
-
-# grafico
 
 ggplotly(grafico)
 ```
@@ -840,8 +865,6 @@ cv_folds
 
 
 ```{r, eval=FALSE}
-log_res = readRDS("var/log_res.RData")
-
 log_metrics = metric_set(sens, yardstick::spec, accuracy)
 
 set.seed(1)
@@ -855,8 +878,9 @@ log_res = fit_resamples(
 saveRDS(log_res = "var/log_res.RData")
 ```
 
+```{r, eval=TRUE}
+log_res = readRDS("var/log_res.RData")
 
-```{r}
 log_res_metrics = lapply(1:nrow(log_res), function(i) {
   log_res %>%
     select(.metrics) %>%
@@ -872,7 +896,11 @@ log_res_metrics = lapply(1:nrow(log_res), function(i) {
          accuracy = .metrics..estimate3)
 
 log_res_metrics
+```
 
+
+
+```{r}
 log_res_metrics %>% 
   mutate_all(as.numeric) %>% 
   # add_row(sensitivity = 0,specificity = 0,accuracy = 0, .before = 1) %>% 
@@ -902,25 +930,32 @@ log_res_metrics %>%
              color = "tomato",
              linetype = "dashed") +
   theme_bw() 
-
-
-
-# log_res %>%
-#     select(.metrics) %>% 
-#     dplyr::slice(1) %>% 
-#     unlist() %>%
-#     t() %>% 
-#     data.frame() %>% 
-#     select_if(str_detect(names(.), ".metrics..estimate"))
-
 ```
 
 
 
 ```{r}
-log_res %>% 
-  select_best("accuracy")
+metriche = log_res %>% 
+  select(.metrics) %>% 
+  map_dfr(as.data.frame) %>% 
+  select(.metric, .estimate, .config) %>%  
+  pivot_wider(names_from = .metric, values_from = .estimate, id_cols = .config) 
+
+metriche
 ```
+
+Il modello 
+
+
+```{r}
+log_res %>% 
+  collect_predictions() %>% 
+  select(fraud, .pred_class) %>% 
+  table() %>% 
+  caret::confusionMatrix(positive = "Fraud")
+```
+
+
 
 ## Random Forest
 
@@ -973,10 +1008,11 @@ saveRDS(rf_fit_mtry12, "var/rf_fit_mtry12.RData")
 
 ### Valutazione del modello
 
-```{r, eval=FALSE}
+```{r}
 rf_fit_mtry2 = readRDS("var/rf_fit_mtry2.RData") # importo il modello nel'enviroment
 rf_fit_mtry5 = readRDS("var/rf_fit_mtry5.RData") # importo il modello nel'enviroment
 rf_fit_mtry12 = readRDS("var/rf_fit_mtry12.RData") # importo il modello nel'enviroment
+
 
 rf_out_mtry2 = rf_fit_mtry2 %>% 
   extract_fit_engine()
@@ -998,12 +1034,10 @@ rf_out_mtry12 = rf_fit_mtry12 %>%
 rf_pred_mtry12 = predict(rf_fit_mtry12,
                     new_data = data_test,
                     type = 'prob')
-# rm(rf_fit_mtry2) # elimino il modello per liberare spazio
-# gc()
 ```
 
 
-```{r, warning=FALSE}
+```{r}
 data_test %>% 
   select(fraud) %>% 
   add_column(rf_pred_mtry2, .name_repair = "unique") %>%
@@ -1081,6 +1115,8 @@ df_rec_25var = df_rec %>%
   step_nzv(all_factor_predictors()) %>%
   step_corr(all_predictors())  
 
+df_rec_25var
+
 data_train_25var = df_rec_25var %>% 
   prep(training = data_train) %>% 
   bake(new_data = NULL)
@@ -1088,6 +1124,12 @@ data_train_25var = df_rec_25var %>%
 data_test_25var = df_rec_25var %>% 
   prep(training = data_test)  %>% 
   bake(new_data = NULL)
+
+rm(rf_fit_mtry2) # elimino il modello per liberare spazio
+rm(rf_fit_mtry5) # elimino il modello per liberare spazio
+rm(rf_fit_mtry12) # elimino il modello per liberare spazio
+gc()
+
 ```
 
 
@@ -1174,12 +1216,11 @@ rf_auc =
   roc_curve(fraud, .pred_Fraud, event_level = "second") %>% 
   mutate(model = "Random Forest")
 
-bind_rows(rf_auc, lr_auc) %>% 
-  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+rf_auc %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) + 
   geom_path(lwd = 1.5, alpha = 0.8) +
   geom_abline(lty = 3) + 
-  coord_equal() + 
-  scale_color_viridis_d(option = "plasma", end = .6)
+  coord_equal() 
 ```
 
 
@@ -1227,6 +1268,8 @@ saveRDS(tree_res, "var/tree_res.RData")
 
 
 ```{r}
+tree_res = readRDS("var/tree_res.RData")
+
 tree_res %>%
   collect_metrics() %>%
   mutate(tree_depth = factor(tree_depth)) %>%
@@ -1331,7 +1374,7 @@ saveRDS(lr_res, "var/lr_res.RData")
 
 
 ```{r}
-lr_res = readRDS()
+lr_res = readRDS("var/lr_res.RData")
   lr_res %>% 
   collect_metrics() %>% 
   ggplot(aes(x = penalty, y = mean)) + 
@@ -1372,7 +1415,7 @@ lr_best
 lr_auc =  lr_res %>% 
   collect_predictions(parameters = lr_best) %>% 
   roc_curve(fraud, .pred_Fraud, event_level = "second") %>% 
-  mutate(model = "Logistic Regression")
+  mutate(model = "Regressione logistica")
 
 lr_auc %>% autoplot(lr_auc)
 ```
@@ -1386,6 +1429,191 @@ lr_res %>%
   caret::confusionMatrix(positive = "Fraud")
 ```
 
+```{r}
+lr_final_wflw = 
+  lr_workflow %>% 
+  finalize_workflow(lr_best)
+```
+
+```{r}
+lr_fit = 
+  lr_final_wflw %>%
+  last_fit(data_split)
+
+```
 
 
+
+
+# Modello finale
+
+In questa fase si procederà ad allenare i modelli sul dataset originale con i parametri trovati nei capitoli precedenti. 
+Ci si ritroverà in una situazione di imbilanciamento delle classe, sarà quindi opportuno utilizzare una tecnica di ribilanciamente. 
+In questo caso è stata utilizzata ROSE. 
+
+```{r, eval=FALSE}
+set.seed(1)
+df_split = initial_split(df, prop = 3/4, strata = "fraud")
+
+df_train = training(data_split)
+df_test = testing(data_split)
+```
+
+
+## Regressione logistica
+
+```{r, eval=FALSE}
+Sys.time()
+lr_fit_finale = lr_final_wflw %>% last_fit(df_split)
+Sys.time()
+
+saveRDS(lr_fit_finale, "var/lr_fit_finale.RData")
+```
+
+### Curva ROC 
+
+```{r}
+lr_fit_finale = readRDS("var/lr_fit_finale.RData")
+
+lr_auc_finale = lr_fit_finale %>% 
+  collect_predictions() %>% 
+  roc_curve(fraud, .pred_Fraud, event_level = "second") %>% 
+  mutate(model = "Regressione logistica finale senza ROSE")
+```
+
+
+```{r}
+bind_rows(rf_auc, lr_auc, lr_auc_finale) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(lwd = 1.5, alpha = 0.8) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  scale_color_viridis_d(option = "plasma", end = .6)
+```
+
+## Regressione logistica con ROSE
+
+```{r, eval=FALSE}
+lr_final_wflw_rose = lr_final_wflw %>%
+  update_recipe(df_rec %>% step_rose())
+
+Sys.time()
+lr_fit_finale_rose = lr_final_wflw_rose %>% last_fit(df_split)
+Sys.time()
+
+saveRDS(lr_fit_finale_rose, "var/lr_fit_finale_rose.RData")
+```
+
+### Curva ROC 
+
+```{r}
+lr_fit_finale_rose = readRDS("var/lr_fit_finale_rose.RData")
+lr_auc_finale_rose = lr_fit_finale_rose %>% 
+  collect_predictions() %>% 
+  roc_curve(fraud, .pred_Fraud, event_level = "second") %>% 
+  mutate(model = "Regressione logistica finale con ROSE")
+```
+
+
+```{r}
+bind_rows(rf_auc, lr_auc, lr_auc_finale, lr_auc_finale_rose) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(lwd = 1, alpha = 0.6) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  scale_color_viridis_d(option = "plasma", end = 1)
+```
+
+## Random forest senza ROSE
+
+```{r}
+rf_wflw_finale = rf_workflow %>% 
+  finalize_workflow(rf_best)
+
+rf_wflw_finale
+```
+
+```{r, eval=FALSE}
+Sys.time()
+rf_fit_finale = rf_wflw_finale %>% last_fit(df_split)
+Sys.time()
+
+saveRDS(rf_fit_finale, "var/rf_fit_finale.RData")
+```
+
+
+### Curva ROC
+
+```{r}
+rf_fit_finale = readRDS("var/rf_fit_finale.RData")
+
+rf_auc_finale = rf_fit_finale %>% 
+  collect_predictions() %>% 
+  roc_curve(fraud, .pred_Fraud, event_level = "second") %>% 
+  mutate(model = "Random forest finale")
+```
+
+```{r}
+bind_rows(rf_auc, lr_auc, lr_auc_finale, rf_auc_finale) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(lwd = 1, alpha = 0.8) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  scale_color_viridis_d(option = "plasma", end = .6)
+```
+
+
+### Importanza delle variabili
+
+```{r}
+rf_fit_finale %>%
+  extract_fit_engine() %>% 
+  vip::vi() %>% 
+  head(25) %>% 
+  arrange(Importance) %>% 
+  ggplot(aes(x = Variable, y = Importance)) +
+  geom_col() +
+  coord_flip()
+```
+
+## Random forest con ROSE
+
+```{r, eval=FALSE}
+rf_wflw_finale_rose = rf_wflw_finale %>%
+  update_recipe(df_rec %>% step_rose)
+  
+
+Sys.time()
+rf_fit_finale_rose = rf_wflw_finale_rose %>% last_fit(df_split)
+Sys.time()
+
+saveRDS(rf_fit_finale_rose, "var/rf_fit_finale_rose.RData")
+```
+
+
+```{r}
+rf_fit_finale_rose = readRDS("var/rf_fit_finale_rose.RData")
+rf_auc_finale_rose = rf_fit_finale_rose %>% 
+  collect_predictions() %>% 
+  roc_curve(fraud, .pred_Fraud, event_level = "second") %>% 
+  mutate(model = "Random forest finale con ROSE")
+```
+
+```{r}
+bind_rows(
+  rf_auc,
+  lr_auc,
+  lr_auc_finale,
+  lr_auc_finale_rose,
+  rf_auc_finale,
+  rf_auc_finale_rose
+) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(lwd = 1, alpha = 0.8) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  theme_bw() +
+  # theme(legend.position = c(.8,.23)) +
+  scale_color_viridis_d(option = "plasma", end = 1)
+```
 
