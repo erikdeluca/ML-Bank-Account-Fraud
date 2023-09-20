@@ -32,7 +32,7 @@ library(kableExtra)
 library(knitr)
 library(tune)
 library(discrim)
-library(klaR)
+library(klaR) 
 library(themis)
 library(tidymodels)
 library(plotly)
@@ -961,10 +961,10 @@ set.seed(1)
 rf_fit_mtry2 = fit(rf_wflw_mtry2, data = data_train)
 
 set.seed(1)
-rf_fit_mtry12 <- fit(rf_wflw_mtry12, data = data_train)
+rf_fit_mtry12 = fit(rf_wflw_mtry12, data = data_train)
 
 set.seed(1)
-rf_fit_mtry5 <- fit(rf_wflw_mtry5, data = data_train)
+rf_fit_mtry5 = fit(rf_wflw_mtry5, data = data_train)
 
 saveRDS(rf_fit_mtry2, "var/rf_fit_mtry2.RData")
 saveRDS(rf_fit_mtry5, "var/rf_fit_mtry5.RData")
@@ -974,7 +974,9 @@ saveRDS(rf_fit_mtry12, "var/rf_fit_mtry12.RData")
 ### Valutazione del modello
 
 ```{r, eval=FALSE}
-# rf_fit_mtry2 = readRDS("var/rf_fit_mtry2.RData") # importo il modello nel'enviroment
+rf_fit_mtry2 = readRDS("var/rf_fit_mtry2.RData") # importo il modello nel'enviroment
+rf_fit_mtry5 = readRDS("var/rf_fit_mtry5.RData") # importo il modello nel'enviroment
+rf_fit_mtry12 = readRDS("var/rf_fit_mtry12.RData") # importo il modello nel'enviroment
 
 rf_out_mtry2 = rf_fit_mtry2 %>% 
   extract_fit_engine()
@@ -1075,12 +1077,27 @@ var_Importance = rf_varImportance %>%
   select(Variable)
 
 df_rec_25var = df_rec %>% 
-  step_select(var_Importance$Variable) %>% 
+  step_select(c(var_Importance$Variable, "fraud")) %>% 
   step_nzv(all_factor_predictors()) %>%
   step_corr(all_predictors())  
 
-df_rec_25var %>% 
-  prep(training = data_train)  
+data_train_25var = df_rec_25var %>% 
+  prep(training = data_train) %>% 
+  bake(new_data = NULL)
+
+data_test_25var = df_rec_25var %>% 
+  prep(training = data_test)  %>% 
+  bake(new_data = NULL)
+```
+
+
+### Tuning
+
+Svolgo il lavoro su differenti core della CPU.
+
+```{r}
+cores = parallel::detectCores()
+cores
 ```
 
 
@@ -1104,8 +1121,9 @@ tree_grid = grid_regular(cost_complexity(),
 
 
 tree_wflw = workflow() %>%
-  add_model(tree_mod) %>%
-  add_recipe(df_rec_25var)
+  add_recipe(df_rec_25var) %>%
+  # add_recipe(recipe(fraud ~ ., data = data_train_25var)) %>%   
+  add_model(tree_mod) 
 
 set.seed(1)
 data_folds = vfold_cv(data_train)
@@ -1114,12 +1132,172 @@ tree_wflw
 ```
 
 
-```{r}
+```{r, eval=FALSE}
 tree_res = 
   tree_wflw %>% 
   tune_grid(
     resamples = data_folds,
     grid = tree_grid
     )
+saveRDS(tree_res, "var/tree_res.RData")
 ```
+
+
+
+```{r}
+tree_res %>%
+  collect_metrics() %>%
+  mutate(tree_depth = factor(tree_depth)) %>%
+  ggplot(aes(cost_complexity, mean, color = tree_depth)) +
+  geom_line(size = 1.5, alpha = 0.6) +
+  geom_point(size = 2) +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0)
+
+```
+
+
+```{r}
+tree_res %>%
+  show_best("accuracy")
+```
+
+
+
+
+```{r}
+best_tree = tree_res %>%
+  select_best("accuracy")
+
+best_tree
+```
+
+
+
+```{r}
+tree_final_wflw = 
+  tree_wflw %>% 
+  finalize_workflow(best_tree)
+```
+
+```{r}
+tree_fit = 
+  tree_final_wflw %>%
+  last_fit(data_split) 
+
+tree_fit %>%
+  collect_metrics()
+```
+
+
+```{r}
+tree_fit %>%
+  collect_predictions() %>% 
+  roc_curve(fraud, .pred_Fraud, event_level = "second") %>% 
+  autoplot()
+```
+
+```{r}
+tree_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot::rpart.plot()
+  # plot()
+# text()
+```
+
+```{r}
+tree_fit %>%
+  collect_predictions() %>% 
+  mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = 0.75)) %>% 
+  select(fraud,pred_best) %>% 
+  table() %>% 
+  caret::confusionMatrix(positive = "Fraud")
+```
+
+
+## GLM 
+
+
+```{r}
+lr_mod =
+  logistic_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet")
+
+lr_workflow =
+  workflow() %>% 
+  add_model(lr_mod) %>% 
+  add_recipe(df_rec_25var)
+
+lr_reg_grid = tibble(penalty = 10^ seq(-4, -1, length.out = 30))
+
+```
+
+
+```{r}
+lr_res =
+  lr_workflow %>% 
+  tune_grid(data_s,
+            grid = lr_reg_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+```
+
+
+```{r}
+  lr_res %>% 
+  collect_metrics() %>% 
+  ggplot(aes(x = penalty, y = mean)) + 
+  geom_point() + 
+  geom_line() + 
+  ylab("Area under the ROC Curve") +
+  geom_vline(aes(xintercept =   lr_res %>% 
+                   collect_metrics() %>% 
+                   select(penalty) %>% 
+                   slice(20) %>% 
+                   as.numeric()),
+             color = "tomato") +
+  scale_x_log10(labels = scales::label_number())
+```
+
+
+
+```{r}
+top_models =
+  lr_res %>% 
+  show_best("roc_auc", n = 20) %>% 
+  arrange(penalty) 
+top_models
+```
+
+Scelgo il 20esimo modello migliore considerando l'AUC per massimizzare la penalità e di conseguenza migliorare il modello.
+
+```{r}
+lr_best =
+  lr_res %>% 
+  collect_metrics() %>% 
+  arrange(penalty) %>% 
+  slice(20)
+lr_best
+```
+
+```{r}
+  lr_res %>% 
+  collect_predictions(parameters = lr_best) %>% 
+  roc_curve(fraud, .pred_Fraud, event_level = "second") %>% 
+  mutate(model = "Logistic Regression") %>% 
+  autoplot(lr_auc)
+```
+
+```{r}
+lr_res %>% 
+  collect_predictions(parameters = lr_best) %>% 
+  mutate(pred_best = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = 0.765)) %>% 
+  select(fraud,pred_best) %>% 
+  table() %>% 
+  caret::confusionMatrix(positive = "Fraud")
+```
+
+
+
 
