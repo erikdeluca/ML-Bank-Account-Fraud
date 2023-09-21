@@ -360,10 +360,12 @@ df_rec =
   step_dummy(all_nominal_predictors()) %>% 
   step_rose(fraud) %>% 
   step_zv(all_nominal_predictors())
+
+df_rec %>% prep()
 ```
 
 
-```{r, eval=FALSE}
+```{r}
 df %>% 
   select(fraud) %>% 
   table() %>%
@@ -455,7 +457,7 @@ grafico = log_coef %>%
   geom_pointrange(position = "jitter") +
   coord_flip() +
   scale_x_discrete(labels = log_coef %>% 
-                     creaGruppoVariabili(names(dfRid), "term") %>% 
+                     creaGruppoVariabili(names(df), "term") %>% 
                      str_sub(end = 15) %>% 
                      as.factor() %>% 
                      levels()) +
@@ -491,8 +493,8 @@ Dalle probabilità creo la predizione della classe in base al threshold impostat
 logistic_output %>%
   ggplot(aes(x = fraud, y = `.pred_No fraud`)) +
   geom_violin(fill = "mediumspringgreen", alpha = .6) + 
-  geom_hline(yintercept = 0.5, color='mediumvioletred') +  # try changing threshold
-  geom_hline(yintercept = 0.73, color='mediumvioletred') +  # try changing threshold
+  geom_hline(yintercept = 0.5, color='mediumvioletred') +  
+  geom_hline(yintercept = 0.73, color='mediumvioletred') +  
   labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
   scale_y_percent() +
   theme_classic()
@@ -503,7 +505,7 @@ Le metriche scelte in questo caso sono la sensitività, specificità, accuratezz
 
 
 ```{r}
-log_metrics = metric_set(sens, yardstick::spec, accuracy,yardstick::precision) 
+log_metrics = metric_set(sens, yardstick::spec, accuracy) 
 
 logistic_output %>% 
   log_metrics(estimate = .pred_class, truth = fraud, event_level = "second") 
@@ -770,21 +772,19 @@ ggplotly(grafico)
 
 Dalle probabilità creo la predizione della classe in base al threshold impostato, per ora pongo 0.5. successivamente lo andrò ad adattare per trovare la soluzione migliore al problema.
 
+
+
 ```{r}
-log_output_rid <- data_test %>%
+log_output_rid = data_test %>%
   bind_cols(predict(log_fit_rid, new_data = data_test, type = 'prob')) %>%
   mutate(.pred_class = probably::make_two_class_pred(`.pred_No fraud`, levels(fraud), threshold = .5))
 
-```
 
-
-
-```{r}
 log_output_rid %>%
   ggplot(aes(x = fraud, y = `.pred_No fraud`)) +
   geom_violin(fill = "mediumspringgreen", alpha = .6) + 
-  geom_hline(yintercept = 0.5, color='mediumvioletred') +  # try changing threshold
-  geom_hline(yintercept = 0.6, color='mediumvioletred') +  # try changing threshold
+  geom_hline(yintercept = 0.5, color='mediumvioletred') +  
+  geom_hline(yintercept = 0.6, color='mediumvioletred') +  
   labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
   scale_y_percent() +
   theme_classic()
@@ -795,9 +795,9 @@ Le metriche scelte in questo caso sono la sensitività, specificità, accuratezz
 
 
 ```{r}
-log_metrics = metric_set(sens, yardstick::spec, accuracy,yardstick::precision) 
+log_metrics = metric_set(sens, yardstick::spec, accuracy) 
 
-logistic_output %>% 
+log_output_rid %>% 
   log_metrics(estimate = .pred_class, truth = fraud, event_level = "second") 
 ```
 
@@ -805,7 +805,7 @@ logistic_output %>%
 
 <!-- Attraverso la curva ROC vado a cercare la migliore soluzione tra FPR e TPR (recall) in modo tale da trovare il threshold che massimizza la specificità con la sensitività al più del 95%. -->
 
-Il threshold per trovare un recall del 5% è stato impostato a 0,73.
+<!-- Il threshold per trovare un recall del 5% è stato impostato a 0,73. -->
 
 ```{r}
 log_roc = logistic_output %>% 
@@ -1047,8 +1047,8 @@ data_test %>%
   mutate(mtry = factor(mtry, labels = c("mtry2", "mtry5", "mtry12"))) %>% 
   ggplot(aes(x = fraud, y = value)) +
   geom_violin(fill = "mediumspringgreen", alpha = .6) + 
-  geom_hline(yintercept = 0.5, color='mediumvioletred') +  # try changing threshold
-  geom_hline(yintercept = 0.85, color='mediumvioletred') +  # try changing threshold
+  geom_hline(yintercept = 0.5, color='mediumvioletred') +  
+  geom_hline(yintercept = 0.85, color='mediumvioletred') + 
   facet_grid(cols = dplyr::vars(mtry)) +
   labs(y = 'Predicted Probability of Outcome', x = 'Observed Outcome') +
   scale_y_percent() +
@@ -1616,4 +1616,24 @@ bind_rows(
   # theme(legend.position = c(.8,.23)) +
   scale_color_viridis_d(option = "plasma", end = 1)
 ```
+
+```{r}
+bind_rows(
+  # rf_auc,
+  # lr_auc,
+  # lr_auc_finale,
+  lr_auc_finale_rose,
+  # rf_auc_finale,
+  rf_auc_finale_rose
+) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(lwd = 1, alpha = 0.8) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  theme_bw() +
+  # theme(legend.position = c(.8,.23)) +
+  scale_color_viridis_d(option = "plasma", end = 1)
+
+```
+
 
