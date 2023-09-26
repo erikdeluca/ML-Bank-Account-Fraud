@@ -1619,11 +1619,11 @@ bind_rows(
 
 ```{r}
 bind_rows(
-  # rf_auc,
-  # lr_auc,
-  # lr_auc_finale,
+  rf_auc,
+  lr_auc,
+  lr_auc_finale,
   lr_auc_finale_rose,
-  # rf_auc_finale,
+  rf_auc_finale,
   rf_auc_finale_rose
 ) %>% 
   ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
