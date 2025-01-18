@@ -1,3 +1,2 @@
-*.qmd linguist-language=R
-*.rmd linguist-language=R
-*.html linguist-vendored
+*.rmd  linguist-detectable
+*.Rmd  linguist-detectable
